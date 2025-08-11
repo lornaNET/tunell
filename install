@@ -75,7 +75,7 @@ dashboard_page = '''
 <meta charset="UTF-8">
 <title>داشبورد مانیتورینگ لورنا</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-gauge@0.3.0/dist/chartjs-gauge.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-gauge@3.0.0/dist/chartjs-chart-gauge.min.js"></script>
 <style>
 body { font-family: sans-serif; margin:0; padding:0; }
 header { background:#0f172a; color:white; padding:10px; display:flex; justify-content:space-between; align-items:center; }
@@ -111,8 +111,8 @@ header { background:#0f172a; color:white; padding:10px; display:flex; justify-co
     </form>
   </div>
 {% else %}
-  <div class="card"><canvas id="cpuGauge" width="180" height="180"></canvas><p>CPU</p></div>
-  <div class="card"><canvas id="ramGauge" width="180" height="180"></canvas><p>RAM</p></div>
+  <div class="card"><canvas id="cpuGauge" width="180" height="180"></canvas><p>CPU (%)</p></div>
+  <div class="card"><canvas id="ramGauge" width="180" height="180"></canvas><p>RAM (%)</p></div>
   <div class="card"><canvas id="upGauge" width="180" height="180"></canvas><p>آپلود (MB)</p></div>
   <div class="card"><canvas id="downGauge" width="180" height="180"></canvas><p>دانلود (MB)</p></div>
 {% endif %}
@@ -120,12 +120,18 @@ header { background:#0f172a; color:white; padding:10px; display:flex; justify-co
 
 <script>
 let gauges = {};
+function gaugeConfig(max){
+  return {
+    type: 'gauge',
+    data: { datasets: [{ value: 0, data: [0, max], backgroundColor: ['#22c55e','#eab308','#ef4444'] }] },
+    options: { responsive:true, needle: { radiusPercentage: 2, widthPercentage: 3.2, lengthPercentage: 80, color: 'rgba(0, 0, 0, 1)' } }
+  };
+}
 function initGauges(){
-  const opts = { type: 'gauge', data: { datasets: [{ value: 0, data: [0,100], backgroundColor: ['#06b6d4','#1e293b'] }]}, options: {responsive:true} };
-  gauges.cpu = new Chart(document.getElementById('cpuGauge'), JSON.parse(JSON.stringify(opts)));
-  gauges.ram = new Chart(document.getElementById('ramGauge'), JSON.parse(JSON.stringify(opts)));
-  gauges.up  = new Chart(document.getElementById('upGauge'),  JSON.parse(JSON.stringify(opts)));
-  gauges.down= new Chart(document.getElementById('downGauge'), JSON.parse(JSON.stringify(opts)));
+  gauges.cpu = new Chart(document.getElementById('cpuGauge'), gaugeConfig(100));
+  gauges.ram = new Chart(document.getElementById('ramGauge'), gaugeConfig(100));
+  gauges.up  = new Chart(document.getElementById('upGauge'), gaugeConfig(1000));
+  gauges.down= new Chart(document.getElementById('downGauge'), gaugeConfig(1000));
 }
 function updateGauges(cpu, ram, up, down){
   gauges.cpu.data.datasets[0].value = cpu;
