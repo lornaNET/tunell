@@ -6,47 +6,64 @@ VENV_DIR="$APP_DIR/venv"
 CONFIG_FILE="$APP_DIR/config.ini"
 LICENSE_FILE="$APP_DIR/license.key"
 
-echo "---- Lorna Panel Installer ----"
+# رنگ‌ها برای پیام‌ها
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
 
-# دکمه‌های عملیات نصب / حذف / تغییر
-echo "Please enter:"
-read -p "Panel port [default: 5000]: " APP_PORT
+print_header() {
+  echo -e "${CYAN}==============================${NC}"
+  echo -e "${CYAN}   نصب پنل مدیریت Lorna    ${NC}"
+  echo -e "${CYAN}==============================${NC}"
+}
+
+print_footer() {
+  echo -e "${CYAN}==============================${NC}"
+  echo -e "${GREEN}نصب با موفقیت انجام شد!${NC}"
+  echo -e "${CYAN}برای اجرای پنل دستور زیر را بزنید:${NC}"
+  echo -e "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
+  echo -e "${CYAN}==============================${NC}"
+}
+
+print_header
+
+# دریافت ورودی کاربر
+read -p "پورت پنل (پیش‌فرض 5000): " APP_PORT
 APP_PORT=${APP_PORT:-5000}
 if ! [[ "$APP_PORT" =~ ^[0-9]+$ ]] || [ "$APP_PORT" -lt 1 ] || [ "$APP_PORT" -gt 65535 ]; then
-  echo "Invalid port. Using 5000."
+  echo -e "${RED}پورت نامعتبر است. پورت 5000 تنظیم می‌شود.${NC}"
   APP_PORT=5000
 fi
 
-read -p "Login username [default: admin]: " USERNAME
+read -p "نام کاربری پنل (پیش‌فرض admin): " USERNAME
 USERNAME=${USERNAME:-admin}
 
-read -p "Login password [default: admin123]: " PASSWORD
+read -p "رمز عبور پنل (پیش‌فرض admin123): " PASSWORD
 PASSWORD=${PASSWORD:-admin123}
 
-# نصب پیش‌نیازها
-echo "[*] Updating package lists..."
+echo -e "${GREEN}در حال بروزرسانی بسته‌ها...${NC}"
 apt update -y
 
-echo "[*] Installing dependencies..."
+echo -e "${GREEN}در حال نصب پیش‌نیازها...${NC}"
 apt install -y python3 python3-venv python3-pip curl >/dev/null
 
 mkdir -p "$APP_DIR"
 chmod 700 "$APP_DIR"
 
-# ذخیره لایسنس
 echo "lorna" > "$LICENSE_FILE"
 chmod 600 "$LICENSE_FILE"
 
-echo "[*] Creating Python virtual environment..."
+echo -e "${GREEN}در حال ساخت محیط مجازی پایتون...${NC}"
 python3 -m venv "$VENV_DIR"
 
-echo "[*] Installing Python packages..."
+echo -e "${GREEN}در حال نصب کتابخانه‌های پایتون...${NC}"
 source "$VENV_DIR/bin/activate"
 pip install --upgrade pip >/dev/null
 pip install flask psutil netifaces configparser >/dev/null
 deactivate
 
-# ذخیره کانفیگ پیش‌فرض
+# ساخت فایل کانفیگ پیش‌فرض
 cat > "$CONFIG_FILE" <<EOF
 [panel]
 port=$APP_PORT
@@ -59,8 +76,7 @@ iran_port=1080
 EOF
 chmod 600 "$CONFIG_FILE"
 
-# نوشتن برنامه Flask
-
+# نوشتن فایل اپلیکیشن Flask
 cat > "$APP_DIR/app.py" <<'EOF'
 import os
 import threading
@@ -69,6 +85,7 @@ import psutil
 import subprocess
 from flask import Flask, render_template_string, request, session, redirect, jsonify
 import configparser
+import re
 
 app = Flask(__name__)
 app.secret_key = os.urandom(24)
@@ -78,22 +95,6 @@ LICENSE_FILE = "/opt/lorna/license.key"
 
 config = configparser.ConfigParser()
 config.read(CONFIG_PATH)
-
-# خواندن تنظیمات اولیه
-APP_PORT = int(config.get('panel', 'port', fallback='5000'))
-USERNAME = config.get('panel', 'username', fallback='admin')
-PASSWORD = config.get('panel', 'password', fallback='admin123')
-
-IRAN_IP = config.get('tunnel', 'iran_ip', fallback='185.79.160.0')
-IRAN_PORT = config.getint('tunnel', 'iran_port', fallback=1080)
-
-prev_tunnel = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
-total_tunnel = {'bytes_sent': 0, 'bytes_recv': 0}
-tunnel_lock = threading.Lock()
-
-def save_config():
-    with open(CONFIG_PATH, 'w') as f:
-        config.write(f)
 
 def verify_license():
     try:
@@ -106,13 +107,31 @@ def verify_license():
     except:
         return False
 
+def load_config():
+    global APP_PORT, USERNAME, PASSWORD, IRAN_IP, IRAN_PORT
+    config.read(CONFIG_PATH)
+    APP_PORT = int(config.get('panel', 'port', fallback='5000'))
+    USERNAME = config.get('panel', 'username', fallback='admin')
+    PASSWORD = config.get('panel', 'password', fallback='admin123')
+    IRAN_IP = config.get('tunnel', 'iran_ip', fallback='185.79.160.0')
+    IRAN_PORT = config.getint('tunnel', 'iran_port', fallback=1080)
+
+load_config()
+
+prev_tunnel = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
+total_tunnel = {'bytes_sent': 0, 'bytes_recv': 0}
+tunnel_lock = threading.Lock()
+
+def save_config():
+    with open(CONFIG_PATH, 'w') as f:
+        config.write(f)
+    load_config()
+
 def get_xray_connected_users():
-    # فرض: گرفتن تعداد کانکشن‌های متصل روی پورت IRAN_PORT
+    # شمارش کانکشن‌های tcp روی پورت IRAN_PORT با ss
     try:
-        # از ss استفاده می‌کنیم برای تعداد کانکشن tcp روی پورت ایران
-        result = subprocess.run(['ss','-tn', f'dst', 'sport = :{IRAN_PORT}'], capture_output=True, text=True)
+        result = subprocess.run(['ss', '-tn', 'sport', f':{IRAN_PORT}'], capture_output=True, text=True)
         lines = result.stdout.strip().split('\n')
-        # خط اول header است
         count = max(0, len(lines) - 1)
         return count
     except Exception:
@@ -122,7 +141,6 @@ def update_tunnel_usage():
     with tunnel_lock:
         try:
             ifaces = psutil.net_if_stats()
-            # فرض می‌کنیم نام اینترفیس تونل tun0 است
             if 'tun0' in ifaces and ifaces['tun0'].isup:
                 counters = psutil.net_io_counters(pernic=True).get('tun0')
                 if counters:
@@ -157,13 +175,12 @@ def get_cpu_ram_usage():
     ram = psutil.virtual_memory().percent
     return cpu, ram
 
-# دکمه‌های بیرونی نصب/حذف/تغییر پسورد/تغییر پورت لینک میشه به اسکریپت bash که خودت داری
 main_page = '''
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
 <meta charset="utf-8" />
-<title>Lorna Panel - مدیریت</title>
+<title>پنل مدیریت Lorna</title>
 <style>
   body { font-family: Tahoma, sans-serif; background:#071b3b; color:#eaf6ff; text-align:center; padding:40px;}
   h1 { margin-bottom: 40px; }
@@ -177,10 +194,10 @@ main_page = '''
   <h1>پنل مدیریت Lorna</h1>
 
   <div>
-    <button onclick="window.location.href='https://yourserver.com/install.sh'">نصب پنل</button>
-    <button onclick="window.location.href='https://yourserver.com/remove.sh'">حذف پنل</button>
-    <button onclick="window.location.href='https://yourserver.com/change_pass.sh'">تغییر پسورد</button>
-    <button onclick="window.location.href='https://yourserver.com/change_port.sh'">تغییر پورت</button>
+    <button onclick="window.location.href='/install'">نصب پنل</button>
+    <button onclick="window.location.href='/remove'">حذف پنل</button>
+    <button onclick="window.location.href='/change_pass'">تغییر پسورد</button>
+    <button onclick="window.location.href='/change_port'">تغییر پورت</button>
   </div>
 
   <hr style="margin:40px 0; border-color:#06b6d4;" />
@@ -238,117 +255,175 @@ dashboard_page = '''
 <header>
   <h1>داشبورد پنل Lorna</h1>
   <form method="POST" action="/logout" style="margin:0;">
-    <button type="submit" class="logout">خروج</button>
+    <button class="logout" type="submit">خروج</button>
   </form>
 </header>
-
 <div class="container">
-  <form id="configForm">
-    <label>آدرس IP ایران:</label>
-    <input type="text" id="iran_ip" name="iran_ip" value="{{ iran_ip }}" required pattern="^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)(\.|$)){4}$" title="IP معتبر وارد کنید" />
-    <label>پورت ایران:</label>
-    <input type="number" id="iran_port" name="iran_port" value="{{ iran_port }}" required min="1" max="65535" />
-    <button type="submit" class="save-btn">ذخیره تنظیمات</button>
-  </form>
 
   <div class="circle-container">
     <div class="circle-card">
-      <h3>سرعت آپلود (MB/s)</h3>
-      <canvas id="uploadChart"></canvas>
-      <div id="uploadValue" style="font-size:24px; margin-top:10px;">0.00</div>
-    </div>
-    <div class="circle-card">
-      <h3>سرعت دانلود (MB/s)</h3>
-      <canvas id="downloadChart"></canvas>
-      <div id="downloadValue" style="font-size:24px; margin-top:10px;">0.00</div>
-    </div>
-    <div class="circle-card">
-      <h3>مصرف CPU (%)</h3>
-      <canvas id="cpuChart"></canvas>
-      <div id="cpuValue" style="font-size:24px; margin-top:10px;">0</div>
-    </div>
-    <div class="circle-card">
       <h3>کاربران متصل</h3>
-      <canvas id="usersChart"></canvas>
-      <div id="usersValue" style="font-size:24px; margin-top:10px;">0</div>
+      <p id="connected_users" style="font-size: 3em; font-weight: 700;">0</p>
+    </div>
+
+    <div class="circle-card">
+      <h3>میزان ارسال (MB/s)</h3>
+      <canvas id="uploadChart"></canvas>
+      <p id="upload_speed" style="font-weight: 600; font-size: 18px;">0.0000</p>
+    </div>
+
+    <div class="circle-card">
+      <h3>میزان دریافت (MB/s)</h3>
+      <canvas id="downloadChart"></canvas>
+      <p id="download_speed" style="font-weight: 600; font-size: 18px;">0.0000</p>
+    </div>
+
+    <div class="circle-card">
+      <h3>ترافیک کل (MB)</h3>
+      <p id="total_traffic" style="font-size: 2em; font-weight: 700;">0</p>
+    </div>
+
+    <div class="circle-card">
+      <h3>استفاده CPU (%)</h3>
+      <canvas id="cpuChart"></canvas>
+      <p id="cpu_usage" style="font-weight: 600; font-size: 18px;">0%</p>
+    </div>
+
+    <div class="circle-card">
+      <h3>استفاده RAM (%)</h3>
+      <canvas id="ramChart"></canvas>
+      <p id="ram_usage" style="font-weight: 600; font-size: 18px;">0%</p>
     </div>
   </div>
+
 </div>
 
 <script>
-const uploadCtx = document.getElementById('uploadChart').getContext('2d');
-const downloadCtx = document.getElementById('downloadChart').getContext('2d');
-const cpuCtx = document.getElementById('cpuChart').getContext('2d');
-const usersCtx = document.getElementById('usersChart').getContext('2d');
+let uploadChart, downloadChart, cpuChart, ramChart;
+let uploadData = {labels: [], datasets: [{label: 'Upload MB/s', data: [], borderColor: '#06b6d4', fill: false, tension: 0.4}]};
+let downloadData = {labels: [], datasets: [{label: 'Download MB/s', data: [], borderColor: '#06b6d4', fill: false, tension: 0.4}]};
+let cpuData = {labels: [], datasets: [{label: 'CPU %', data: [], borderColor: '#06b6d4', fill: false, tension: 0.4}]};
+let ramData = {labels: [], datasets: [{label: 'RAM %', data: [], borderColor: '#06b6d4', fill: false, tension: 0.4}]};
 
-function createCircleChart(ctx, color) {
+function createChart(ctx, data) {
   return new Chart(ctx, {
-    type: 'doughnut',
-    data: {
-      labels: ['مقدار', 'خالی'],
-      datasets: [{
-        data: [0, 100],
-        backgroundColor: [color, '#2a3a57'],
-        borderWidth: 0
-      }]
-    },
+    type: 'line',
+    data: data,
     options: {
-      cutout: '80%',
       responsive: true,
-      plugins: { legend: { display: false } },
-      animation: { duration: 500 }
+      animation: false,
+      scales: {
+        x: { display: false },
+        y: { beginAtZero: true }
+      },
+      plugins: { legend: { display: false } }
     }
   });
 }
 
-const uploadChart = createCircleChart(uploadCtx, '#06b6d4');
-const downloadChart = createCircleChart(downloadCtx, '#0abf5b');
-const cpuChart = createCircleChart(cpuCtx, '#e06b6b');
-const usersChart = createCircleChart(usersCtx, '#f3c623');
+function updateCharts(up, down, cpu, ram) {
+  let now = new Date().toLocaleTimeString();
 
-function updateCharts(data) {
-  function update(chart, value, max=100) {
-    const capped = Math.min(value, max);
-    chart.data.datasets[0].data = [capped, max - capped];
-    chart.update();
+  if (uploadData.labels.length > 20) {
+    uploadData.labels.shift();
+    uploadData.datasets[0].data.shift();
+    downloadData.labels.shift();
+    downloadData.datasets[0].data.shift();
+    cpuData.labels.shift();
+    cpuData.datasets[0].data.shift();
+    ramData.labels.shift();
+    ramData.datasets[0].data.shift();
   }
-  update(uploadChart, data.upload_speed * 10, 100);
-  update(downloadChart, data.download_speed * 10, 100);
-  update(cpuChart, data.cpu_usage, 100);
-  update(usersChart, data.users, 100);
 
-  document.getElementById('uploadValue').innerText = data.upload_speed.toFixed(2);
-  document.getElementById('downloadValue').innerText = data.download_speed.toFixed(2);
-  document.getElementById('cpuValue').innerText = data.cpu_usage.toFixed(1);
-  document.getElementById('usersValue').innerText = data.users;
+  uploadData.labels.push(now);
+  uploadData.datasets[0].data.push(up);
+  downloadData.labels.push(now);
+  downloadData.datasets[0].data.push(down);
+  cpuData.labels.push(now);
+  cpuData.datasets[0].data.push(cpu);
+  ramData.labels.push(now);
+  ramData.datasets[0].data.push(ram);
+
+  uploadChart.update();
+  downloadChart.update();
+  cpuChart.update();
+  ramChart.update();
+
+  document.getElementById('upload_speed').textContent = up.toFixed(4);
+  document.getElementById('download_speed').textContent = down.toFixed(4);
+  document.getElementById('cpu_usage').textContent = cpu.toFixed(1) + '%';
+  document.getElementById('ram_usage').textContent = ram.toFixed(1) + '%';
 }
 
-async function fetchData() {
-  try {
-    const resp = await fetch('/api/stats');
-    const data = await resp.json();
-    updateCharts(data);
-  } catch(e) {
-    console.error(e);
-  }
+function fetchStats() {
+  fetch('/stats')
+    .then(response => response.json())
+    .then(data => {
+      document.getElementById('connected_users').textContent = data.connected_users;
+      document.getElementById('total_traffic').textContent = ((data.total_bytes_sent + data.total_bytes_recv)/(1024*1024)).toFixed(2);
+      updateCharts(data.upload_MBps, data.download_MBps, data.cpu_percent, data.ram_percent);
+    })
+    .catch(console.error);
 }
 
-document.getElementById('configForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const ip = document.getElementById('iran_ip').value;
-  const port = parseInt(document.getElementById('iran_port').value);
-  const resp = await fetch('/api/config', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({iran_ip: ip, iran_port: port})
-  });
-  if (resp.ok) alert('تنظیمات ذخیره شد');
-  else alert('خطا در ذخیره تنظیمات');
-});
+window.onload = function() {
+  uploadChart = createChart(document.getElementById('uploadChart').getContext('2d'), uploadData);
+  downloadChart = createChart(document.getElementById('downloadChart').getContext('2d'), downloadData);
+  cpuChart = createChart(document.getElementById('cpuChart').getContext('2d'), cpuData);
+  ramChart = createChart(document.getElementById('ramChart').getContext('2d'), ramData);
 
-setInterval(fetchData, 3000);
-fetchData();
+  fetchStats();
+  setInterval(fetchStats, 2000);
+}
 </script>
+</body>
+</html>
+'''
+
+change_pass_page = '''
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>تغییر رمز عبور</title>
+<style>
+  body { font-family: Tahoma, sans-serif; background:#071b3b; color:#eaf6ff; text-align:center; padding:40px;}
+  input { padding: 10px; font-size: 18px; margin: 10px auto; display: block; border-radius: 8px; border: none; width: 250px;}
+  button { background:#06b6d4; border:none; padding:15px 30px; font-size:18px; margin:20px; color:#fff; border-radius:10px; cursor:pointer; }
+  button:hover { background:#028ea3; }
+</style>
+</head>
+<body>
+  <h1>تغییر رمز عبور</h1>
+  <form method="POST">
+    <input type="password" name="new_password" placeholder="رمز عبور جدید" required />
+    <button type="submit">ذخیره</button>
+  </form>
+  <a href="/dashboard">بازگشت به داشبورد</a>
+</body>
+</html>
+'''
+
+change_port_page = '''
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8" />
+<title>تغییر پورت</title>
+<style>
+  body { font-family: Tahoma, sans-serif; background:#071b3b; color:#eaf6ff; text-align:center; padding:40px;}
+  input { padding: 10px; font-size: 18px; margin: 10px auto; display: block; border-radius: 8px; border: none; width: 250px;}
+  button { background:#06b6d4; border:none; padding:15px 30px; font-size:18px; margin:20px; color:#fff; border-radius:10px; cursor:pointer; }
+  button:hover { background:#028ea3; }
+</style>
+</head>
+<body>
+  <h1>تغییر پورت پنل</h1>
+  <form method="POST">
+    <input type="number" name="new_port" placeholder="پورت جدید" min="1" max="65535" required />
+    <button type="submit">ذخیره</button>
+  </form>
+  <a href="/dashboard">بازگشت به داشبورد</a>
 </body>
 </html>
 '''
@@ -356,78 +431,100 @@ fetchData();
 @app.route('/')
 def index():
     if not verify_license():
-        return "لایسنس معتبر نیست."
-    if 'logged_in' in session and session['logged_in']:
-        return redirect('/dashboard')
+        return "<h2 style='color:red;text-align:center;margin-top:50px;'>لایسنس معتبر نیست. لطفاً فایل license.key را بررسی کنید.</h2>"
     return main_page
 
 @app.route('/login', methods=['POST'])
 def login():
-    username = request.form.get('username','')
-    password = request.form.get('password','')
+    if not verify_license():
+        return "<h2 style='color:red;text-align:center;margin-top:50px;'>لایسنس معتبر نیست. ورود غیرمجاز است.</h2>"
+    username = request.form.get('username')
+    password = request.form.get('password')
     if username == USERNAME and password == PASSWORD:
         session['logged_in'] = True
         return redirect('/dashboard')
     else:
-        return login_error_page
+        return login_error_page, 401
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('logged_in'):
+        return redirect('/')
+    if not verify_license():
+        return "<h2 style='color:red;text-align:center;margin-top:50px;'>لایسنس معتبر نیست. دسترسی غیرمجاز.</h2>"
+    return dashboard_page
 
 @app.route('/logout', methods=['POST'])
 def logout():
     session.pop('logged_in', None)
     return redirect('/')
 
-@app.route('/dashboard')
-def dashboard():
+@app.route('/stats')
+def stats():
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    up, down, total_sent, total_recv = update_tunnel_usage()
+    cpu, ram = get_cpu_ram_usage()
+    connected_users = get_xray_connected_users()
+    return jsonify({
+        'upload_MBps': up,
+        'download_MBps': down,
+        'total_bytes_sent': total_sent,
+        'total_bytes_recv': total_recv,
+        'cpu_percent': cpu,
+        'ram_percent': ram,
+        'connected_users': connected_users
+    })
+
+@app.route('/change_pass', methods=['GET', 'POST'])
+def change_pass():
     if not session.get('logged_in'):
         return redirect('/')
-    config.read(CONFIG_PATH)
-    iran_ip = config.get('tunnel', 'iran_ip', fallback='185.79.160.0')
-    iran_port = config.getint('tunnel', 'iran_port', fallback=1080)
-    return render_template_string(dashboard_page, iran_ip=iran_ip, iran_port=iran_port)
+    if request.method == 'POST':
+        new_pass = request.form.get('new_password')
+        if new_pass and 3 <= len(new_pass) <= 64:
+            config.set('panel', 'password', new_pass)
+            save_config()
+            return '<h2 style="text-align:center;color:green;margin-top:50px;">رمز عبور با موفقیت تغییر کرد.<br><a href="/dashboard">بازگشت به داشبورد</a></h2>'
+        else:
+            return '<h2 style="text-align:center;color:red;margin-top:50px;">رمز عبور نامعتبر است.<br><a href="/change_pass">بازگشت</a></h2>'
+    return change_pass_page
 
-@app.route('/api/config', methods=['POST'])
-def api_config():
+@app.route('/change_port', methods=['GET', 'POST'])
+def change_port():
     if not session.get('logged_in'):
-        return jsonify({'error': 'unauthorized'}), 401
-    data = request.json
-    ip = data.get('iran_ip','').strip()
-    port = int(data.get('iran_port', 0))
-    # اعتبارسنجی ساده IP
-    import re
-    if not re.match(r'^(\d{1,3}\.){3}\d{1,3}$', ip):
-        return jsonify({'error': 'invalid ip'}), 400
-    if port < 1 or port > 65535:
-        return jsonify({'error': 'invalid port'}), 400
-    config.read(CONFIG_PATH)
-    config.set('tunnel', 'iran_ip', ip)
-    config.set('tunnel', 'iran_port', str(port))
-    save_config()
-    global IRAN_IP, IRAN_PORT
-    IRAN_IP = ip
-    IRAN_PORT = port
-    return jsonify({'status': 'ok'})
+        return redirect('/')
+    if request.method == 'POST':
+        try:
+            new_port = int(request.form.get('new_port'))
+            if 1 <= new_port <= 65535:
+                config.set('panel', 'port', str(new_port))
+                save_config()
+                return f'<h2 style="text-align:center;color:green;margin-top:50px;">پورت پنل با موفقیت به {new_port} تغییر کرد.<br><a href="/dashboard">بازگشت به داشبورد</a></h2>'
+            else:
+                raise ValueError
+        except Exception:
+            return '<h2 style="text-align:center;color:red;margin-top:50px;">پورت نامعتبر است.<br><a href="/change_port">بازگشت</a></h2>'
+    return change_port_page
 
-@app.route('/api/stats')
-def api_stats():
+@app.route('/install')
+def install_panel():
     if not session.get('logged_in'):
-        return jsonify({'error': 'unauthorized'}), 401
-    up_speed, down_speed, total_sent, total_recv = update_tunnel_usage()
-    cpu, ram = get_cpu_ram_usage()
-    users = get_xray_connected_users()
-    return jsonify({
-        'upload_speed': up_speed,
-        'download_speed': down_speed,
-        'total_upload_bytes': total_sent,
-        'total_download_bytes': total_recv,
-        'cpu_usage': cpu,
-        'ram_usage': ram,
-        'users': users
-    })
+        return redirect('/')
+    # فقط به عنوان مثال پیام نصب (در عمل کد نصب یا اجرای اسکریپت نصب را اینجا اضافه کنید)
+    return '<h2 style="text-align:center;color:green;margin-top:50px;">فرآیند نصب پنل آغاز شد.<br><a href="/dashboard">بازگشت به داشبورد</a></h2>'
+
+@app.route('/remove')
+def remove_panel():
+    if not session.get('logged_in'):
+        return redirect('/')
+    # فقط پیام حذف (در عمل دستور حذف یا اسکریپت حذف را اینجا اضافه کنید)
+    return '<h2 style="text-align:center;color:red;margin-top:50px;">پنل حذف شد.<br><a href="/">بازگشت به صفحه اصلی</a></h2>'
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=APP_PORT)
 EOF
 
-echo "[*] نصب کامل شد."
-echo "برای اجرای پنل دستور زیر را بزنید:"
-echo "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
+chmod +x "$APP_DIR/app.py"
+
+print_footer
