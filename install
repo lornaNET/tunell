@@ -3,43 +3,59 @@ set -e
 
 APP_DIR="/opt/network_monitor"
 VENV_DIR="$APP_DIR/venv"
-APP_PORT=5000
 LICENSE_FILE="$APP_DIR/license.key"
 LICENSE_VALUE="lorna"
+APP_PORT=5000  # default, but can be changed in install
 
 function print_menu() {
   clear
   echo "=============================="
-  echo " پنل مانیتورینگ لورنا - نصب "
+  echo " Lorna Network Monitor Panel "
   echo "=============================="
-  echo "1) نصب پنل"
-  echo "2) حذف پنل"
-  echo "3) خروج"
+  echo "1) Install Panel"
+  echo "2) Remove Panel"
+  echo "3) Exit"
   echo "=============================="
-  echo -n "انتخاب خود را وارد کنید: "
+  echo -n "Enter your choice: "
 }
 
 function install_panel() {
-  echo "[*] آپدیت مخازن و نصب پیش‌نیازها..."
-  apt update
-  apt install -y python3 python3-venv python3-pip curl
+  echo -n "Enter the port for the panel [default: 5000]: "
+  read -r input_port
 
-  echo "[*] ایجاد دایرکتوری برنامه..."
+  if [[ -n "$input_port" ]]; then
+    if ! [[ "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
+      echo "Invalid port number. Using default port 5000."
+      APP_PORT=5000
+    else
+      APP_PORT=$input_port
+    fi
+  else
+    APP_PORT=5000
+  fi
+
+  echo "[*] Updating repositories and installing dependencies..."
+  apt update
+  apt install -y python3 python3-venv python3-pip curl >/dev/null
+
+  echo "[*] Creating application directory..."
   mkdir -p "$APP_DIR"
   echo "$LICENSE_VALUE" > "$LICENSE_FILE"
   chmod 600 "$LICENSE_FILE"
 
-  echo "[*] ساخت محیط مجازی پایتون..."
+  echo "[*] Creating Python virtual environment..."
   python3 -m venv "$VENV_DIR"
   source "$VENV_DIR/bin/activate"
 
-  echo "[*] نصب پکیج‌های موردنیاز..."
+  echo "[*] Installing required Python packages..."
   pip install --upgrade pip >/dev/null
   pip install flask psutil netifaces >/dev/null
 
-  echo "[*] ایجاد فایل برنامه Flask..."
-  cat > "$APP_DIR/app.py" <<'PYEOF'
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+  echo "[*] Creating Flask application file..."
+
+  # Use a here-doc with variable substitution for APP_PORT
+  cat > "$APP_DIR/app.py" <<PYEOF
+from flask import Flask, render_template_string, request, redirect, session, jsonify
 import psutil, os, time, threading, re
 
 app = Flask(__name__)
@@ -47,7 +63,8 @@ app.secret_key = 'super_secret_key_lorna_change_me'
 
 USERNAME = "admin"
 PASSWORD = "admin123"
-LICENSE_FILE = "/opt/network_monitor/license.key"
+LICENSE_FILE = "$LICENSE_FILE"
+APP_PORT = $APP_PORT
 
 prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 total_net = {'bytes_sent': 0, 'bytes_recv': 0}
@@ -110,7 +127,6 @@ def update_tunnel_usage():
 
     with tunnel_lock:
         try:
-            # بررسی وجود اینترفیس tun0 و فعال بودنش
             ifaces = psutil.net_if_stats()
             if 'tun0' in ifaces and ifaces['tun0'].isup:
                 counters = psutil.net_io_counters(pernic=True).get('tun0')
@@ -144,11 +160,11 @@ def update_tunnel_usage():
 
 login_page = '''
 <!doctype html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>لورنا — ورود</title>
+<title>Lorna — Login</title>
 <style>
 body {
   font-family: Tahoma, sans-serif;
@@ -208,15 +224,15 @@ button {
 </head>
 <body>
 <div class="container">
-  <h1>ورود به پنل لورنا</h1>
+  <h1>Login to Lorna Panel</h1>
   {% if error %}<div class="error">{{ error }}</div>{% endif %}
   <form method="POST">
-    <input type="text" name="username" placeholder="نام کاربری" required />
-    <input type="password" name="password" placeholder="رمز عبور" required />
-    <input type="text" name="license" placeholder="کد لایسنس (lorna)" required />
-    <button type="submit">ورود</button>
+    <input type="text" name="username" placeholder="Username" required />
+    <input type="password" name="password" placeholder="Password" required />
+    <input type="text" name="license" placeholder="License Key (lorna)" required />
+    <button type="submit">Login</button>
   </form>
-  <div class="small">نام کاربری/رمز پیش‌فرض: <b>admin / admin123</b></div>
+  <div class="small">Default username/password: <b>admin / admin123</b></div>
 </div>
 </body>
 </html>
@@ -224,11 +240,11 @@ button {
 
 dashboard_page = '''
 <!doctype html>
-<html lang="fa" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>لورنا — داشبورد</title>
+<title>Lorna — Dashboard</title>
 <style>
 body {
   font-family: Tahoma, sans-serif;
@@ -236,7 +252,7 @@ body {
   background: linear-gradient(180deg,#04102a,#071b3b);
   color: #eaf6ff;
   min-height: 100vh;
-  direction: rtl;
+  direction: ltr;
 }
 header {
   background: rgba(255,255,255,0.05);
@@ -257,205 +273,82 @@ button {
   cursor: pointer;
   font-size: 16px;
   border-radius: 8px;
-  padding: 6px 14px;
-  transition: background-color 0.3s ease;
+  padding: 6px 10px;
+  transition: background 0.3s ease;
 }
 button:hover {
-  background: #06b6d4;
-  color: #051426;
+  background: rgba(6,182,212,0.2);
 }
-main {
-  max-width: 1200px;
-  margin: 22px auto;
-  padding: 0 18px;
+.main {
+  padding: 20px 24px;
+  max-width: 960px;
+  margin: 0 auto;
 }
-.cards {
+.stats {
   display: flex;
-  gap: 18px;
+  gap: 24px;
   flex-wrap: wrap;
-  justify-content: center;
 }
 .card {
-  background: rgba(255,255,255,0.03);
-  border-radius: 50%;
-  padding: 24px;
-  width: 160px;
-  height: 160px;
-  box-sizing: border-box;
-  text-align: center;
-  box-shadow: 0 0 12px rgba(0,0,0,0.3);
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-}
-h2 {
-  margin: 10px 0 16px 0;
-  font-size: 20px;
-}
-.value {
-  font-size: 36px;
-  font-weight: 700;
-  color: #7c3aed;
-}
-.label {
-  margin-top: 8px;
-  font-size: 14px;
-  color: rgba(234,246,255,0.7);
-  user-select: none;
-}
-.net-values {
-  font-size: 24px;
-  font-weight: 700;
-  margin: 6px 0 0 0;
-  color: #06b6d4;
-  user-select: none;
-}
-#tunnelForm {
-  margin: 24px auto;
-  max-width: 400px;
   background: rgba(255,255,255,0.05);
-  padding: 18px 24px;
   border-radius: 16px;
-  box-shadow: 0 0 12px rgba(0,0,0,0.7);
-  color: #eaf6ff;
-  display: none;
+  padding: 20px;
+  flex: 1 1 200px;
+  box-shadow: 0 0 10px rgba(6,182,212,0.3);
+  min-width: 200px;
 }
-#tunnelForm label {
-  display: block;
-  margin-bottom: 8px;
+.card h2 {
+  margin-top: 0;
+  font-weight: 600;
+  font-size: 22px;
 }
-#tunnelForm input {
-  width: 100%;
-  padding: 8px 12px;
-  margin-bottom: 14px;
-  border-radius: 8px;
-  border: none;
+.card p {
+  margin: 6px 0 0 0;
   font-size: 16px;
-  background: rgba(255,255,255,0.1);
-  color: #eaf6ff;
-}
-#tunnelForm button {
-  width: 100%;
-  padding: 10px 0;
-  background: #7c3aed;
-  border: none;
-  border-radius: 10px;
-  font-weight: 700;
-  font-size: 18px;
-  color: #fff;
-  cursor: pointer;
-}
-footer {
-  margin-top: 44px;
-  text-align: center;
-  font-size: 12px;
-  color: rgba(234,246,255,0.5);
-  user-select: none;
-}
-
-@keyframes pulse {
-  0%, 100% { box-shadow: 0 0 10px 4px #7c3aed; }
-  50% { box-shadow: 0 0 20px 8px #a78bfa; }
-}
-.value.pulse {
-  animation: pulse 2s infinite;
 }
 </style>
 <script>
-function logout() {
-  fetch('/logout').then(() => {
-    window.location.href = '/';
-  });
-}
-function showTunnelForm() {
-  let form = document.getElementById('tunnelForm');
-  if(form.style.display === 'none' || form.style.display === '') {
-    form.style.display = 'block';
-  } else {
-    form.style.display = 'none';
+async function fetchStats() {
+  try {
+    const response = await fetch('/api/stats');
+    if (!response.ok) {
+      throw new Error('Failed to fetch stats');
+    }
+    const data = await response.json();
+    document.getElementById('net-up').textContent = data.network_upload + ' MB/s';
+    document.getElementById('net-down').textContent = data.network_download + ' MB/s';
+    document.getElementById('tun-up').textContent = data.tunnel_upload + ' MB/s';
+    document.getElementById('tun-down').textContent = data.tunnel_download + ' MB/s';
+  } catch (e) {
+    console.error(e);
   }
 }
-function setTunnel() {
-  const ip = document.getElementById('tunnel_ip').value.trim();
-  const port = document.getElementById('tunnel_port').value.trim();
-  fetch('/set_tunnel', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ip, port})
-  }).then(res => res.json()).then(data => {
-    alert(data.message);
-    if(data.success) {
-      document.getElementById('tunnelForm').style.display = 'none';
-    }
-  });
-}
-function fetchStats() {
-  fetch('/stats').then(res => res.json()).then(data => {
-    document.getElementById('net_up').textContent = data.network.upload + ' MB/s';
-    document.getElementById('net_down').textContent = data.network.download + ' MB/s';
-    document.getElementById('net_total_up').textContent = data.network.total_upload.toFixed(2) + ' MB';
-    document.getElementById('net_total_down').textContent = data.network.total_download.toFixed(2) + ' MB';
 
-    document.getElementById('tun_up').textContent = data.tunnel.upload + ' MB/s';
-    document.getElementById('tun_down').textContent = data.tunnel.download + ' MB/s';
-    document.getElementById('tun_total_up').textContent = data.tunnel.total_upload.toFixed(2) + ' MB';
-    document.getElementById('tun_total_down').textContent = data.tunnel.total_download.toFixed(2) + ' MB';
-  });
-}
-setInterval(fetchStats, 2000);
+setInterval(fetchStats, 3000);
 window.onload = fetchStats;
 </script>
 </head>
 <body>
 <header>
-  <h1>داشبورد مانیتورینگ لورنا</h1>
-  <button onclick="logout()">خروج</button>
+  <h1>Lorna Network Monitor Dashboard</h1>
+  <form action="/logout" method="POST" style="margin:0;">
+    <button type="submit">Logout</button>
+  </form>
 </header>
-<main>
-  <div class="cards">
+<main class="main">
+  <div class="stats">
     <div class="card">
-      <h2>کل شبکه - آپلود</h2>
-      <div class="value pulse" id="net_up">0.0000 MB/s</div>
-      <div class="label">آپلود فعلی</div>
-      <div class="net-values" id="net_total_up">0.00 MB</div>
-      <div class="label">کل آپلود</div>
+      <h2>Network Usage</h2>
+      <p>Upload: <span id="net-up">0.0000</span></p>
+      <p>Download: <span id="net-down">0.0000</span></p>
     </div>
     <div class="card">
-      <h2>کل شبکه - دانلود</h2>
-      <div class="value pulse" id="net_down">0.0000 MB/s</div>
-      <div class="label">دانلود فعلی</div>
-      <div class="net-values" id="net_total_down">0.00 MB</div>
-      <div class="label">کل دانلود</div>
-    </div>
-    <div class="card">
-      <h2>تونل - آپلود</h2>
-      <div class="value pulse" id="tun_up">0.0000 MB/s</div>
-      <div class="label">آپلود فعلی</div>
-      <div class="net-values" id="tun_total_up">0.00 MB</div>
-      <div class="label">کل آپلود</div>
-    </div>
-    <div class="card">
-      <h2>تونل - دانلود</h2>
-      <div class="value pulse" id="tun_down">0.0000 MB/s</div>
-      <div class="label">دانلود فعلی</div>
-      <div class="net-values" id="tun_total_down">0.00 MB</div>
-      <div class="label">کل دانلود</div>
+      <h2>Tunnel Usage (tun0)</h2>
+      <p>Upload: <span id="tun-up">0.0000</span></p>
+      <p>Download: <span id="tun-down">0.0000</span></p>
     </div>
   </div>
-
-  <button onclick="showTunnelForm()" style="margin:24px auto; display:block; padding:12px 24px; border:none; border-radius:10px; background:#7c3aed; color:#fff; font-weight:700; font-size:16px; cursor:pointer;">تنظیم IP و پورت تونل</button>
-
-  <form id="tunnelForm" onsubmit="event.preventDefault(); setTunnel();">
-    <label for="tunnel_ip">IP تونل</label>
-    <input type="text" id="tunnel_ip" name="tunnel_ip" placeholder="مثلاً 192.168.1.100" required />
-    <label for="tunnel_port">پورت تونل</label>
-    <input type="text" id="tunnel_port" name="tunnel_port" placeholder="مثلاً 8080" required />
-    <button type="submit">ذخیره</button>
-  </form>
-
 </main>
-<footer>© 2025 لورنا - تمام حقوق محفوظ است.</footer>
 </body>
 </html>
 '''
@@ -467,90 +360,55 @@ def login():
 
     error = None
     if request.method == 'POST':
-        username = request.form.get('username', '')
-        password = request.form.get('password', '')
-        license_key = request.form.get('license', '')
-        if username == USERNAME and password == PASSWORD:
-            if verify_license(license_key):
-                session['logged_in'] = True
-                return redirect('/dashboard')
-            else:
-                error = "کد لایسنس اشتباه است."
+        username = request.form.get('username')
+        password = request.form.get('password')
+        license_key = request.form.get('license')
+
+        if not verify_license(license_key):
+            error = "Invalid license key."
+        elif username == USERNAME and password == PASSWORD:
+            session['logged_in'] = True
+            return redirect('/dashboard')
         else:
-            error = "نام کاربری یا رمز عبور اشتباه است."
+            error = "Invalid username or password."
 
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
-    if not session.get('logged_in'):
+    if 'logged_in' not in session or not session['logged_in']:
         return redirect('/')
     return render_template_string(dashboard_page)
 
-@app.route('/logout')
+@app.route('/api/stats')
+def api_stats():
+    if 'logged_in' not in session or not session['logged_in']:
+        return jsonify({'error': 'Unauthorized'}), 401
+    net_up, net_down = update_network_usage()
+    tun_up, tun_down = update_tunnel_usage()
+    return jsonify({
+        'network_upload': net_up,
+        'network_download': net_down,
+        'tunnel_upload': tun_up,
+        'tunnel_download': tun_down,
+    })
+
+@app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
     return redirect('/')
-
-@app.route('/set_tunnel', methods=['POST'])
-def set_tunnel():
-    if not session.get('logged_in'):
-        return jsonify({"success": False, "message": "لطفا وارد شوید."})
-    data = request.get_json()
-    ip = data.get('ip', '').strip()
-    port = data.get('port', '').strip()
-
-    # اعتبارسنجی ساده
-    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    port_pattern = r'^\d{1,5}$'
-    if not re.match(ip_pattern, ip):
-        return jsonify({"success": False, "message": "IP نامعتبر است."})
-    if not re.match(port_pattern, port) or int(port) > 65535:
-        return jsonify({"success": False, "message": "پورت نامعتبر است."})
-
-    tunnel_info['ip'] = ip
-    tunnel_info['port'] = port
-    # ریست آمار تونل
-    with tunnel_lock:
-        prev_tunnel['bytes_sent'] = None
-        prev_tunnel['bytes_recv'] = None
-        prev_tunnel['time'] = None
-        total_tunnel['bytes_sent'] = 0
-        total_tunnel['bytes_recv'] = 0
-
-    return jsonify({"success": True, "message": "تنظیمات تونل ذخیره شد."})
-
-@app.route('/stats')
-def stats():
-    if not session.get('logged_in'):
-        return jsonify({"error": "لطفا وارد شوید."}), 401
-
-    up_net, down_net = update_network_usage()
-    up_tun, down_tun = update_tunnel_usage()
-
-    return jsonify({
-        "network": {
-            "upload": up_net,
-            "download": down_net,
-            "total_upload": total_net['bytes_sent'] / (1024*1024),
-            "total_download": total_net['bytes_recv'] / (1024*1024),
-        },
-        "tunnel": {
-            "upload": up_tun,
-            "download": down_tun,
-            "total_upload": total_tunnel['bytes_sent'] / (1024*1024),
-            "total_download": total_tunnel['bytes_recv'] / (1024*1024),
-        }
-    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=APP_PORT)
 PYEOF
 
-  echo "[*] ساخت سرویس systemd برای اجرای برنامه..."
-  cat > /etc/systemd/system/lorna_monitor.service <<EOF
+  deactivate
+
+  echo "[*] Creating systemd service..."
+
+  cat > /etc/systemd/system/lorna.service <<EOF
 [Unit]
-Description=Lorna Network Monitor
+Description=Lorna Network Monitor Panel
 After=network.target
 
 [Service]
@@ -563,39 +421,50 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-  echo "[*] فعال‌سازی و اجرای سرویس..."
+  echo "[*] Enabling and starting the service..."
   systemctl daemon-reload
-  systemctl enable lorna_monitor.service
-  systemctl start lorna_monitor.service
+  systemctl enable lorna.service
+  systemctl restart lorna.service
 
-  echo "نصب با موفقیت انجام شد!"
-  echo "برای ورود به پنل به آدرس http://$(hostname -I | awk '{print $1}'):$APP_PORT بروید"
-  echo "نام کاربری: admin"
-  echo "رمز عبور: admin123"
-  echo "کد لایسنس: lorna"
+  echo "Installation complete! Access your panel at: http://your_server_ip:$APP_PORT"
 }
 
 function remove_panel() {
-  echo "[*] متوقف کردن سرویس..."
-  systemctl stop lorna_monitor.service || true
-  systemctl disable lorna_monitor.service || true
+  echo "[*] Stopping and disabling service..."
+  systemctl stop lorna.service || true
+  systemctl disable lorna.service || true
 
-  echo "[*] حذف فایل‌ها..."
+  echo "[*] Removing service file..."
+  rm -f /etc/systemd/system/lorna.service
+
+  echo "[*] Removing application files..."
   rm -rf "$APP_DIR"
-  rm -f /etc/systemd/system/lorna_monitor.service
 
+  echo "[*] Reloading systemd daemon..."
   systemctl daemon-reload
 
-  echo "پنل حذف شد."
+  echo "Removal complete."
 }
 
 while true; do
   print_menu
   read -r choice
   case $choice in
-    1) install_panel ;;
-    2) remove_panel ;;
-    3) echo "خروج از برنامه..." ; exit 0 ;;
-    *) echo "لطفا گزینه معتبر وارد کنید." ; sleep 2 ;;
+    1)
+      install_panel
+      read -p "Press Enter to continue..."
+      ;;
+    2)
+      remove_panel
+      read -p "Press Enter to continue..."
+      ;;
+    3)
+      echo "Goodbye!"
+      exit 0
+      ;;
+    *)
+      echo "Invalid option. Try again."
+      read -p "Press Enter to continue..."
+      ;;
   esac
 done
