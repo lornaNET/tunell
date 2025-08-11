@@ -43,19 +43,74 @@ login_page = '''
 <html lang="fa">
 <head>
 <meta charset="UTF-8">
-<title>ورود به پنل</title>
+<title>ورود به پنل لورنا</title>
 <style>
-body {font-family: Tahoma, sans-serif; direction: rtl; background: #222; color: #eee;}
-.container {width: 300px; margin: 100px auto; padding: 20px; background: #333; border-radius: 8px;}
-input[type=text], input[type=password] {width: 100%; padding: 10px; margin: 5px 0 10px 0; border:none; border-radius:4px;}
-button {width: 100%; padding: 10px; background: #28a745; border:none; color: #fff; font-size: 16px; cursor: pointer;}
-button:hover {background: #218838;}
-.error {color: #ff6666;}
+    body {
+        font-family: Tahoma, sans-serif;
+        direction: rtl;
+        background: linear-gradient(135deg, #1f2937, #111827);
+        color: #e0e7ff;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        margin: 0;
+    }
+    .container {
+        background: #374151;
+        padding: 30px 40px;
+        border-radius: 12px;
+        box-shadow: 0 0 15px rgba(59, 130, 246, 0.7);
+        width: 320px;
+        text-align: center;
+    }
+    h2 {
+        margin-bottom: 25px;
+        font-weight: 700;
+        font-size: 26px;
+        color: #60a5fa;
+    }
+    input[type=text], input[type=password] {
+        width: 100%;
+        padding: 12px 15px;
+        margin: 12px 0 18px 0;
+        border: none;
+        border-radius: 8px;
+        font-size: 16px;
+        background: #1f2937;
+        color: #e0e7ff;
+        box-sizing: border-box;
+        transition: background 0.3s ease;
+    }
+    input[type=text]:focus, input[type=password]:focus {
+        background: #111827;
+        outline: none;
+    }
+    button {
+        width: 100%;
+        padding: 14px;
+        background: #2563eb;
+        border: none;
+        border-radius: 8px;
+        color: white;
+        font-size: 18px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background 0.3s ease;
+    }
+    button:hover {
+        background: #1e40af;
+    }
+    .error {
+        color: #f87171;
+        margin-bottom: 15px;
+        font-weight: 600;
+    }
 </style>
 </head>
 <body>
 <div class="container">
-<h2>ورود به پنل</h2>
+<h2>ورود به پنل لورنا</h2>
 {% if error %}<p class="error">{{ error }}</p>{% endif %}
 <form method="post">
 <input type="text" name="username" placeholder="نام کاربری" required>
@@ -72,20 +127,60 @@ dashboard_page = '''
 <html lang="fa">
 <head>
 <meta charset="UTF-8" />
-<title>داشبورد مانیتورینگ</title>
+<title>داشبورد مانیتورینگ لورنا</title>
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-body {font-family: Tahoma, sans-serif; direction: rtl; background: #121212; color: #eee; margin: 20px;}
-h1 {text-align: center;}
-.container {max-width: 900px; margin: auto;}
-.logout {float: left; margin-bottom: 20px;}
-.chart-container {background: #222; padding: 20px; border-radius: 10px; margin-bottom: 30px;}
+    body {
+        font-family: Tahoma, sans-serif;
+        direction: rtl;
+        background: #0f172a;
+        color: #f1f5f9;
+        margin: 20px;
+    }
+    h1 {
+        text-align: center;
+        color: #60a5fa;
+        font-size: 32px;
+        margin-bottom: 30px;
+        text-shadow: 0 0 10px #3b82f6;
+    }
+    .container {
+        max-width: 900px;
+        margin: auto;
+    }
+    .logout {
+        float: left;
+        margin-bottom: 20px;
+        color: #f87171;
+        font-weight: 700;
+        text-decoration: none;
+        background: #1e293b;
+        padding: 8px 15px;
+        border-radius: 8px;
+        transition: background 0.3s ease;
+    }
+    .logout:hover {
+        background: #ef4444;
+        color: white;
+    }
+    .chart-container {
+        background: #1e293b;
+        padding: 25px;
+        border-radius: 14px;
+        margin-bottom: 35px;
+        box-shadow: 0 0 20px rgba(59, 130, 246, 0.6);
+    }
+    h3 {
+        margin-bottom: 15px;
+        color: #93c5fd;
+        text-shadow: 0 0 6px #2563eb;
+    }
 </style>
 </head>
 <body>
 <div class="container">
 <a href="{{ url_for('logout') }}" class="logout">خروج</a>
-<h1>داشبورد مانیتورینگ سرور</h1>
+<h1>داشبورد مانیتورینگ لورنا</h1>
 
 <div class="chart-container">
 <h3>مصرف CPU</h3>
@@ -116,10 +211,11 @@ const cpuChart = new Chart(cpuCtx, {
         labels: ['مصرف شده', 'باقی‌مانده'],
         datasets: [{
             data: [cpuData, 100 - cpuData],
-            backgroundColor: ['#ff6384', '#36a2eb'],
+            backgroundColor: ['#ef4444', '#3b82f6'],
+            hoverOffset: 30,
         }]
     },
-    options: {responsive: true, cutout: '70%'}
+    options: {responsive: true, cutout: '75%'}
 });
 
 // نمودار RAM
@@ -130,10 +226,11 @@ const ramChart = new Chart(ramCtx, {
         labels: ['مصرف شده', 'باقی‌مانده'],
         datasets: [{
             data: [ramData, 100 - ramData],
-            backgroundColor: ['#ffce56', '#4bc0c0'],
+            backgroundColor: ['#facc15', '#14b8a6'],
+            hoverOffset: 30,
         }]
     },
-    options: {responsive: true, cutout: '70%'}
+    options: {responsive: true, cutout: '75%'}
 });
 
 // نمودار شبکه
@@ -145,10 +242,34 @@ const netChart = new Chart(netCtx, {
         datasets: [{
             label: 'مگابایت',
             data: [netData.upload, netData.download],
-            backgroundColor: ['#36a2eb', '#ff6384']
+            backgroundColor: ['#3b82f6', '#ef4444'],
+            borderRadius: 6,
         }]
     },
-    options: {responsive: true, scales: {y: {beginAtZero:true}}}
+    options: {
+        responsive: true,
+        scales: {
+            y: {
+                beginAtZero: true,
+                grid: {
+                    color: '#334155'
+                },
+                ticks: {
+                    color: '#cbd5e1',
+                    font: { size: 14 }
+                }
+            },
+            x: {
+                grid: {
+                    display: false
+                },
+                ticks: {
+                    color: '#cbd5e1',
+                    font: { size: 14 }
+                }
+            }
+        }
+    }
 });
 </script>
 </body>
@@ -156,15 +277,14 @@ const netChart = new Chart(netCtx, {
 '''
 
 def get_network_usage():
-    # استفاده از vnstat برای دریافت آپلود و دانلود امروز به مگابایت
     try:
         result = subprocess.check_output("vnstat --json", shell=True).decode()
         import json
         data = json.loads(result)
-        rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024  # vnstat به کیلوبایت میده
+        rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024
         tx_bytes = data['interfaces'][0]['traffic']['day'][0]['tx'] * 1024
         return {'upload': round(tx_bytes / (1024*1024), 2), 'download': round(rx_bytes / (1024*1024), 2)}
-    except Exception as e:
+    except Exception:
         return {'upload': 0, 'download': 0}
 
 @app.route('/', methods=['GET', 'POST'])
@@ -203,7 +323,6 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 EOF
 
-    # اجرای برنامه
     echo "پنل نصب شد. برای اجرای پنل دستور زیر را بزنید:"
     echo "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
     echo "سپس مرورگر را باز کرده و به آدرس http://IP-Server:$APP_PORT بروید."
