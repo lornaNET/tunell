@@ -23,8 +23,8 @@ if [ "$CHOICE" == "1" ]; then
     apt remove --purge -y netdata
     rm -rf /etc/netdata
 
-    # نصب Netdata
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
+    # نصب Netdata با دنبال کردن ریدایرکت curl
+    bash <(curl -L -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
 
     # صبر کن تا فایل کانفیگ ایجاد بشه
     sleep 5
@@ -36,22 +36,17 @@ if [ "$CHOICE" == "1" ]; then
     fi
 
     # تغییر یا اضافه کردن بخش [web] در فایل کانفیگ
-    # اگر بخش [web] هست، پورت و basic auth رو تغییر بده، در غیر اینصورت اضافه کن
     if grep -q "^\[web\]" /etc/netdata/netdata.conf; then
-        # تغییر پورت
         sed -i "/^\[web\]/,/^\[/ s/^bind port = .*/bind port = $PANEL_PORT/" /etc/netdata/netdata.conf
-        # اگر bind port نبود داخل بخش [web] اضافه کن
         if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "bind port"; then
             sed -i "/^\[web\]/a bind port = $PANEL_PORT" /etc/netdata/netdata.conf
         fi
-        # اضافه کردن basic auth login file
         if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "basic auth login file"; then
             sed -i "/^\[web\]/a basic auth login file = /etc/netdata/htpasswd" /etc/netdata/netdata.conf
         else
             sed -i "/^\[web\]/,/^\[/ s|basic auth login file = .*|basic auth login file = /etc/netdata/htpasswd|" /etc/netdata/netdata.conf
         fi
     else
-        # اضافه کردن کامل بخش [web]
         cat <<EOF >> /etc/netdata/netdata.conf
 
 [web]
