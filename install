@@ -41,90 +41,68 @@ from flask import Flask, render_template_string, request, redirect, url_for, ses
 import psutil
 import subprocess
 import os
+import json
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_lorna'  # کلید مخفی برای سشن
+app.secret_key = 'super_secret_key_lorna'
 
-# یوزر و پسورد ثابت
 USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
-# بررسی وجود فایل لایسنس
 def verify_license(license_key):
     if not os.path.exists(LICENSE_FILE):
         return False
     with open(LICENSE_FILE, 'r') as f:
         stored_license = f.read().strip()
-    return license_key == stored_license
+    return license_key.strip() == stored_license
 
 login_page = '''
-
-
-
-
-
-
-
-
-
-
-ورود به پنل لورنا
-{% if error %}
-{{ error }}
-{% endif %}
-
-
-
-
-ورود
-
-
-
-
+<!DOCTYPE html>
+<html lang="fa">
+<head><meta charset="UTF-8"><title>ورود به پنل لورنا</title></head>
+<body>
+<h2>ورود به پنل لورنا</h2>
+{% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
+<form method="POST">
+  <label>نام کاربری:</label><br>
+  <input type="text" name="username" required><br><br>
+  <label>رمز عبور:</label><br>
+  <input type="password" name="password" required><br><br>
+  <label>کد لایسنس:</label><br>
+  <input type="text" name="license" required><br><br>
+  <button type="submit">ورود</button>
+</form>
+</body>
+</html>
 '''
 
 dashboard_page = '''
-
-
-
-
-
-
-
-
-
-
-
-خروج
-داشبورد مانیتورینگ لورنا
-بروزرسانی نمودارها
-
-
-مصرف CPU
-
-
-
-
-مصرف RAM
-
-
-
-
-ترافیک شبکه (آپلود و دانلود)
-
-
-
-
-
-
-
+<!DOCTYPE html>
+<html lang="fa">
+<head><meta charset="UTF-8"><title>داشبورد مانیتورینگ لورنا</title></head>
+<body>
+<a href="{{ url_for('logout') }}">خروج</a>
+<h2>داشبورد مانیتورینگ لورنا</h2>
+{% if not license_ok %}
+  <h3>لطفاً کد لایسنس معتبر وارد کنید:</h3>
+  {% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
+  <form method="POST" action="{{ url_for('set_license') }}">
+    <input type="text" name="license" placeholder="کد لایسنس" required>
+    <button type="submit">ثبت</button>
+  </form>
+{% else %}
+  <h3>مصرف CPU: {{ cpu }}%</h3>
+  <h3>مصرف RAM: {{ ram }}%</h3>
+  <h3>ترافیک شبکه: آپلود {{ net['upload'] }} MB | دانلود {{ net['download'] }} MB</h3>
+{% endif %}
+</body>
+</html>
 '''
 
 def get_network_usage():
     try:
         result = subprocess.check_output("vnstat --json", shell=True).decode()
-        import json
         data = json.loads(result)
         rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024
         tx_bytes = data['interfaces'][0]['traffic']['day'][0]['tx'] * 1024
@@ -141,36 +119,50 @@ def login():
         username = request.form['username']
         password = request.form['password']
         license_key = request.form['license']
-        if username == USERNAME and password == PASSWORD and verify_license(license_key):
+        if username == USERNAME and password == PASSWORD:
             session['logged_in'] = True
+            session['license_ok'] = verify_license(license_key)
             return redirect(url_for('dashboard'))
         else:
-            error = 'نام کاربری، رمز عبور یا کد لایسنس اشتباه است'
+            error = 'نام کاربری یا رمز عبور اشتباه است'
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-
     cpu_percent = psutil.cpu_percent(interval=1)
-    ram = psutil.virtual_memory()
-    ram_percent = ram.percent
+    ram_percent = psutil.virtual_memory().percent
     net = get_network_usage()
+    return render_template_string(dashboard_page,
+                                  cpu=cpu_percent,
+                                  ram=ram_percent,
+                                  net=net,
+                                  license_ok=session.get('license_ok', False),
+                                  error=None)
 
-    return render_template_string(dashboard_page, cpu=cpu_percent, ram=ram_percent, net=net)
-
-@app.route('/get_system_data')
-def get_system_data():
-    cpu_percent = psutil.cpu_percent(interval=1)
-    ram = psutil.virtual_memory()
-    ram_percent = ram.percent
-    net = get_network_usage()
-    return jsonify({'cpu': cpu_percent, 'ram': ram_percent, 'net': net})
+@app.route('/set_license', methods=['POST'])
+def set_license():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    license_key = request.form['license']
+    if verify_license(license_key):
+        session['license_ok'] = True
+        return redirect(url_for('dashboard'))
+    else:
+        cpu_percent = psutil.cpu_percent(interval=1)
+        ram_percent = psutil.virtual_memory().percent
+        net = get_network_usage()
+        return render_template_string(dashboard_page,
+                                      cpu=cpu_percent,
+                                      ram=ram_percent,
+                                      net=net,
+                                      license_ok=False,
+                                      error="کد لایسنس نامعتبر است")
 
 @app.route('/logout')
 def logout():
-    session.pop('logged_in', None)
+    session.clear()
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
