@@ -20,22 +20,50 @@ if [ "$CHOICE" == "1" ]; then
     # حذف اگر قبلاً نصب بود
     systemctl stop netdata 2>/dev/null
     systemctl disable netdata 2>/dev/null
+    apt remove --purge -y netdata
+    rm -rf /etc/netdata
 
     # نصب Netdata
     bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
 
-    # تنظیم پورت دلخواه
-    sed -i "s/^bind port = .*/bind port = $PANEL_PORT/" /etc/netdata/netdata.conf
+    # صبر کن تا فایل کانفیگ ایجاد بشه
+    sleep 5
 
-    # ایجاد فایل htpasswd برای احراز هویت ساده (Basic Auth)
-    htpasswd -cb /etc/netdata/htpasswd $PANEL_USER $PANEL_PASS
+    # اگر فایل کانفیگ وجود نداره، خطا بده
+    if [ ! -f /etc/netdata/netdata.conf ]; then
+        echo "❌ فایل کانفیگ netdata پیدا نشد!"
+        exit 1
+    fi
 
-    # فعال کردن احراز هویت Basic در netdata
-    cat <<EOF >> /etc/netdata/netdata.conf
+    # تغییر یا اضافه کردن بخش [web] در فایل کانفیگ
+    # اگر بخش [web] هست، پورت و basic auth رو تغییر بده، در غیر اینصورت اضافه کن
+    if grep -q "^\[web\]" /etc/netdata/netdata.conf; then
+        # تغییر پورت
+        sed -i "/^\[web\]/,/^\[/ s/^bind port = .*/bind port = $PANEL_PORT/" /etc/netdata/netdata.conf
+        # اگر bind port نبود داخل بخش [web] اضافه کن
+        if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "bind port"; then
+            sed -i "/^\[web\]/a bind port = $PANEL_PORT" /etc/netdata/netdata.conf
+        fi
+        # اضافه کردن basic auth login file
+        if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "basic auth login file"; then
+            sed -i "/^\[web\]/a basic auth login file = /etc/netdata/htpasswd" /etc/netdata/netdata.conf
+        else
+            sed -i "/^\[web\]/,/^\[/ s|basic auth login file = .*|basic auth login file = /etc/netdata/htpasswd|" /etc/netdata/netdata.conf
+        fi
+    else
+        # اضافه کردن کامل بخش [web]
+        cat <<EOF >> /etc/netdata/netdata.conf
 
 [web]
+  bind port = $PANEL_PORT
   basic auth login file = /etc/netdata/htpasswd
 EOF
+    fi
+
+    # ایجاد فایل htpasswd برای احراز هویت Basic
+    htpasswd -cb /etc/netdata/htpasswd $PANEL_USER $PANEL_PASS
+    chmod 640 /etc/netdata/htpasswd
+    chown netdata:netdata /etc/netdata/htpasswd
 
     # راه‌اندازی مجدد netdata
     systemctl restart netdata
@@ -49,8 +77,8 @@ elif [ "$CHOICE" == "2" ]; then
     systemctl stop netdata
     apt remove --purge -y netdata
     apt autoremove -y
+    rm -rf /etc/netdata
     rm -f /etc/netdata/htpasswd
-    rm -f /etc/netdata/netdata.conf
     echo "✅ پنل و تمام فایل‌ها حذف شدند."
 else
     echo "❌ گزینه نامعتبر!"
