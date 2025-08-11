@@ -1,101 +1,218 @@
 #!/bin/bash
 
-echo "=== مدیریت پنل مانیتورینگ Netdata روی اوبونتو 22.04 ==="
-echo "1) نصب پنل (پورت پیش‌فرض 19999، بدون احراز هویت)"
-echo "2) فعال‌سازی احراز هویت و تغییر پورت"
-echo "3) حذف کامل پنل"
-read -p "لطفاً گزینه مورد نظر را وارد کنید (1 یا 2 یا 3): " CHOICE
+echo "=== نصب پنل مانیتورینگ شبکه و سیستم با Flask روی اوبونتو 22.04 ==="
+echo "1) نصب و اجرای پنل"
+echo "2) حذف پنل"
+read -p "گزینه مورد نظر را وارد کنید (1 یا 2): " CHOICE
 
-NETDATA_CONF="/etc/netdata/netdata.conf"
-HTPASSWD_FILE="/etc/netdata/htpasswd"
+APP_DIR="/opt/network_monitor"
+VENV_DIR="$APP_DIR/venv"
+APP_PORT=5000
+USER="admin"
+PASS="admin123"
 
-function install_netdata() {
-    echo "در حال به‌روزرسانی سیستم..."
-    apt update && apt upgrade -y
-
+if [ "$CHOICE" == "1" ]; then
     echo "در حال نصب پیش‌نیازها..."
-    apt install -y curl apache2-utils
+    apt update && apt install -y python3 python3-venv python3-pip vnstat
 
-    echo "اگر قبلاً نصب بود، پاک می‌کنیم..."
-    systemctl stop netdata 2>/dev/null
-    systemctl disable netdata 2>/dev/null
-    apt remove --purge -y netdata
-    rm -rf /etc/netdata
+    # ایجاد دایرکتوری برنامه
+    mkdir -p "$APP_DIR"
+    
+    # ساخت محیط مجازی پایتون
+    python3 -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
 
-    echo "در حال نصب Netdata..."
-    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
+    # نصب Flask و psutil برای دریافت اطلاعات سیستم
+    pip install flask psutil
 
-    echo "راه‌اندازی مجدد Netdata..."
-    systemctl restart netdata
+    # ایجاد فایل برنامه Flask
+    cat > "$APP_DIR/app.py" << 'EOF'
+from flask import Flask, render_template_string, request, redirect, url_for, session
+import psutil
+import subprocess
 
-    echo "✅ نصب با موفقیت انجام شد."
-    echo "برای مشاهده پنل، مرورگر را باز کرده و آدرس زیر را وارد کنید:"
-    echo "http://IP-Server:19999"
-}
+app = Flask(__name__)
+app.secret_key = 'secret_key_here'  # برای سشن‌ها، اینو تغییر بده
 
-function enable_auth_and_port() {
-    if [ ! -f "$NETDATA_CONF" ]; then
-        echo "❌ فایل کانفیگ Netdata پیدا نشد. ابتدا باید نصب شود."
-        exit 1
-    fi
+# یوزر و پسورد ثابت
+USERNAME = "admin"
+PASSWORD = "admin123"
 
-    read -p "یوزرنیم احراز هویت: " PANEL_USER
-    read -sp "پسورد احراز هویت: " PANEL_PASS
-    echo
-    read -p "پورت جدید Netdata (مثلاً 19999): " PANEL_PORT
+login_page = '''
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8">
+<title>ورود به پنل</title>
+<style>
+body {font-family: Tahoma, sans-serif; direction: rtl; background: #222; color: #eee;}
+.container {width: 300px; margin: 100px auto; padding: 20px; background: #333; border-radius: 8px;}
+input[type=text], input[type=password] {width: 100%; padding: 10px; margin: 5px 0 10px 0; border:none; border-radius:4px;}
+button {width: 100%; padding: 10px; background: #28a745; border:none; color: #fff; font-size: 16px; cursor: pointer;}
+button:hover {background: #218838;}
+.error {color: #ff6666;}
+</style>
+</head>
+<body>
+<div class="container">
+<h2>ورود به پنل</h2>
+{% if error %}<p class="error">{{ error }}</p>{% endif %}
+<form method="post">
+<input type="text" name="username" placeholder="نام کاربری" required>
+<input type="password" name="password" placeholder="رمز عبور" required>
+<button type="submit">ورود</button>
+</form>
+</div>
+</body>
+</html>
+'''
 
-    # اضافه یا ویرایش بخش [web]
-    if grep -q "^\[web\]" "$NETDATA_CONF"; then
-        sed -i "/^\[web\]/,/^\[/ s/^bind port = .*/bind port = $PANEL_PORT/" "$NETDATA_CONF" || \
-        sed -i "/^\[web\]/a bind port = $PANEL_PORT" "$NETDATA_CONF"
-        if ! grep -q "basic auth login file" "$NETDATA_CONF"; then
-            sed -i "/^\[web\]/a basic auth login file = $HTPASSWD_FILE" "$NETDATA_CONF"
-        else
-            sed -i "s|basic auth login file = .*|basic auth login file = $HTPASSWD_FILE|" "$NETDATA_CONF"
-        fi
-    else
-        cat <<EOF >> "$NETDATA_CONF"
+dashboard_page = '''
+<!DOCTYPE html>
+<html lang="fa">
+<head>
+<meta charset="UTF-8" />
+<title>داشبورد مانیتورینگ</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body {font-family: Tahoma, sans-serif; direction: rtl; background: #121212; color: #eee; margin: 20px;}
+h1 {text-align: center;}
+.container {max-width: 900px; margin: auto;}
+.logout {float: left; margin-bottom: 20px;}
+.chart-container {background: #222; padding: 20px; border-radius: 10px; margin-bottom: 30px;}
+</style>
+</head>
+<body>
+<div class="container">
+<a href="{{ url_for('logout') }}" class="logout">خروج</a>
+<h1>داشبورد مانیتورینگ سرور</h1>
 
-[web]
-  bind port = $PANEL_PORT
-  basic auth login file = $HTPASSWD_FILE
+<div class="chart-container">
+<h3>مصرف CPU</h3>
+<canvas id="cpuChart"></canvas>
+</div>
+
+<div class="chart-container">
+<h3>مصرف RAM</h3>
+<canvas id="ramChart"></canvas>
+</div>
+
+<div class="chart-container">
+<h3>ترافیک شبکه (آپلود و دانلود)</h3>
+<canvas id="netChart"></canvas>
+</div>
+</div>
+
+<script>
+const cpuData = {{ cpu }};
+const ramData = {{ ram }};
+const netData = {{ net }};
+
+// نمودار CPU
+const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+const cpuChart = new Chart(cpuCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['مصرف شده', 'باقی‌مانده'],
+        datasets: [{
+            data: [cpuData, 100 - cpuData],
+            backgroundColor: ['#ff6384', '#36a2eb'],
+        }]
+    },
+    options: {responsive: true, cutout: '70%'}
+});
+
+// نمودار RAM
+const ramCtx = document.getElementById('ramChart').getContext('2d');
+const ramChart = new Chart(ramCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['مصرف شده', 'باقی‌مانده'],
+        datasets: [{
+            data: [ramData, 100 - ramData],
+            backgroundColor: ['#ffce56', '#4bc0c0'],
+        }]
+    },
+    options: {responsive: true, cutout: '70%'}
+});
+
+// نمودار شبکه
+const netCtx = document.getElementById('netChart').getContext('2d');
+const netChart = new Chart(netCtx, {
+    type: 'bar',
+    data: {
+        labels: ['آپلود', 'دانلود'],
+        datasets: [{
+            label: 'مگابایت',
+            data: [netData.upload, netData.download],
+            backgroundColor: ['#36a2eb', '#ff6384']
+        }]
+    },
+    options: {responsive: true, scales: {y: {beginAtZero:true}}}
+});
+</script>
+</body>
+</html>
+'''
+
+def get_network_usage():
+    # استفاده از vnstat برای دریافت آپلود و دانلود امروز به مگابایت
+    try:
+        result = subprocess.check_output("vnstat --json", shell=True).decode()
+        import json
+        data = json.loads(result)
+        rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024  # vnstat به کیلوبایت میده
+        tx_bytes = data['interfaces'][0]['traffic']['day'][0]['tx'] * 1024
+        return {'upload': round(tx_bytes / (1024*1024), 2), 'download': round(rx_bytes / (1024*1024), 2)}
+    except Exception as e:
+        return {'upload': 0, 'download': 0}
+
+@app.route('/', methods=['GET', 'POST'])
+def login():
+    if 'logged_in' in session:
+        return redirect(url_for('dashboard'))
+    error = None
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        if username == USERNAME and password == PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('dashboard'))
+        else:
+            error = 'نام کاربری یا رمز عبور اشتباه است'
+    return render_template_string(login_page, error=error)
+
+@app.route('/dashboard')
+def dashboard():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+
+    cpu_percent = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory()
+    ram_percent = ram.percent
+    net = get_network_usage()
+
+    return render_template_string(dashboard_page, cpu=cpu_percent, ram=ram_percent, net=net)
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
 EOF
-    fi
 
-    echo "در حال ایجاد فایل htpasswd..."
-    htpasswd -cb "$HTPASSWD_FILE" "$PANEL_USER" "$PANEL_PASS"
-    chmod 640 "$HTPASSWD_FILE"
-    chown netdata:netdata "$HTPASSWD_FILE"
+    # اجرای برنامه
+    echo "پنل نصب شد. برای اجرای پنل دستور زیر را بزنید:"
+    echo "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
+    echo "سپس مرورگر را باز کرده و به آدرس http://IP-Server:$APP_PORT بروید."
 
-    echo "راه‌اندازی مجدد Netdata..."
-    systemctl restart netdata
-
-    echo "✅ احراز هویت فعال شد و پورت به $PANEL_PORT تغییر یافت."
-    echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
-    echo "http://IP-Server:$PANEL_PORT"
-}
-
-function uninstall_netdata() {
-    echo "⚠ در حال حذف کامل پنل Netdata..."
-    systemctl stop netdata
-    apt remove --purge -y netdata
-    apt autoremove -y
-    rm -rf /etc/netdata
-    rm -f "$HTPASSWD_FILE"
-    echo "✅ پنل و تمام فایل‌ها حذف شدند."
-}
-
-case "$CHOICE" in
-    1)
-        install_netdata
-        ;;
-    2)
-        enable_auth_and_port
-        ;;
-    3)
-        uninstall_netdata
-        ;;
-    *)
-        echo "❌ گزینه نامعتبر!"
-        ;;
-esac
+elif [ "$CHOICE" == "2" ]; then
+    echo "در حال حذف پنل..."
+    pkill -f "$APP_DIR/app.py"
+    rm -rf "$APP_DIR"
+    echo "حذف انجام شد."
+else
+    echo "گزینه نامعتبر!"
+fi
