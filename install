@@ -1,214 +1,460 @@
 #!/bin/bash
+set -e
 
-echo "=== نصب پنل مانیتورینگ لورنا روی اوبونتو 22.04 ==="
-echo "1) نصب و اجرای پنل"
+echo "=== نصب پنل مانیتورینگ لورنا (Ubuntu 22.04+) ==="
+echo "1) نصب و راه‌اندازی پنل"
 echo "2) حذف پنل"
-read -p "گزینه مورد نظر را وارد کنید (1 یا 2): " CHOICE
+read -p "انتخاب (1 یا 2): " CHOICE
 
 APP_DIR="/opt/network_monitor"
 VENV_DIR="$APP_DIR/venv"
 APP_PORT=5000
-USER="admin"
-PASS="admin123"
 LICENSE_FILE="$APP_DIR/license.key"
+LICENSE_VALUE="lorna"   # لایسنس ثابت
 
 if [ "$CHOICE" == "1" ]; then
-    echo "در حال نصب پیش‌نیازها..."
-    apt update && apt install -y python3 python3-venv python3-pip vnstat curl
+    echo "[*] نصب بسته‌های سیستمی..."
+    apt update
+    apt install -y python3 python3-venv python3-pip curl
 
+    echo "[*] ایجاد پوشه برنامه..."
     mkdir -p "$APP_DIR"
-    echo "lorna" > "$LICENSE_FILE"
+    echo "$LICENSE_VALUE" > "$LICENSE_FILE"
+    chmod 600 "$LICENSE_FILE"
 
+    echo "[*] ساخت محیط مجازی پایتون..."
     python3 -m venv "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
-    pip install flask psutil
 
-cat > "$APP_DIR/app.py" << 'EOF'
+    echo "[*] نصب پکیج‌های پایتونی..."
+    pip install --upgrade pip >/dev/null
+    pip install flask psutil >/dev/null
+
+    echo "[*] ایجاد فایل برنامه Flask..."
+    cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
-import psutil, subprocess, os, json
+import psutil, os, time, threading
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_lorna'
+app.secret_key = 'super_secret_key_lorna_change_me'  # در production این را امن کن
 
 USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
-def verify_license(license_key):
-    if not os.path.exists(LICENSE_FILE):
-        return False
-    return license_key.strip() == open(LICENSE_FILE).read().strip()
+# متغیرهای برای محاسبه سرعت شبکه (thread-safe)
+prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
+net_lock = threading.Lock()
 
+def verify_license(license_key):
+    try:
+        if os.path.exists(LICENSE_FILE):
+            with open(LICENSE_FILE, 'r') as f:
+                stored = f.read().strip()
+            return license_key.strip() == stored
+        else:
+            # اگر فایل نبود، فقط اجازه بده اگر کلید برابر "lorna" باشه
+            return license_key.strip() == "lorna"
+    except Exception:
+        return False
+
+def get_network_speed_mbps():
+    """
+    بازگرداندن سرعت آپلود و دانلود به مگابیت بر ثانیه (Mbps)
+    با استفاده از delta روی net_io_counters
+    """
+    with net_lock:
+        counters = psutil.net_io_counters()
+        cur_sent = counters.bytes_sent
+        cur_recv = counters.bytes_recv
+        now = time.time()
+
+        if prev_net['time'] is None:
+            prev_net['bytes_sent'] = cur_sent
+            prev_net['bytes_recv'] = cur_recv
+            prev_net['time'] = now
+            return 0.0, 0.0
+
+        dt = now - prev_net['time']
+        if dt <= 0:
+            return 0.0, 0.0
+
+        delta_sent = cur_sent - prev_net['bytes_sent']
+        delta_recv = cur_recv - prev_net['bytes_recv']
+
+        prev_net['bytes_sent'] = cur_sent
+        prev_net['bytes_recv'] = cur_recv
+        prev_net['time'] = now
+
+        # bytes/sec -> bits/sec -> Mbps
+        up_mbps = (delta_sent * 8) / (dt * 1_000_000)
+        down_mbps = (delta_recv * 8) / (dt * 1_000_000)
+
+        # مقداردهی اعشار مناسب
+        return round(up_mbps, 3), round(down_mbps, 3)
+
+# صفحه ورود (گرافیکی)
 login_page = '''
-<!DOCTYPE html>
-<html lang="fa">
+<!doctype html>
+<html lang="fa" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<title>ورود به پنل لورنا</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>لورنا — ورود</title>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-body { font-family: sans-serif; background: linear-gradient(135deg,#0f172a,#1e293b); color: #fff; display:flex;justify-content:center;align-items:center;height:100vh; }
-.login-box { background: rgba(255,255,255,0.08); padding: 30px; border-radius: 15px; width:300px; text-align:center; }
-.login-box input { width: 100%; padding:10px; margin:10px 0; border:none; border-radius:8px; }
-.login-box button { padding:10px; width:100%; background:#06b6d4; border:none; color:white; border-radius:8px; cursor:pointer; }
-.login-box button:hover { background:#0891b2; }
+:root{
+  --bg: linear-gradient(135deg,#071026,#0b2b44);
+  --card:#07162b;
+  --text:#eaf6ff;
+  --accent:#06b6d4;
+}
+*{box-sizing:border-box;font-family:'Vazirmatn',sans-serif}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;padding:20px}
+.container{width:100%;max-width:1100px;display:grid;grid-template-columns:1fr 420px;gap:28px}
+.panel{background:rgba(255,255,255,0.03);padding:28px;border-radius:14px;backdrop-filter:blur(6px)}
+.brand{display:flex;gap:12px;align-items:center}
+.logo{width:72px;height:72px;border-radius:14px;background:linear-gradient(90deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:white;font-size:28px}
+h1{margin:6px 0}
+.features{margin-top:16px;line-height:1.8;color:rgba(234,246,255,0.85)}
+.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));padding:22px;border-radius:12px}
+.field{margin-bottom:12px}
+input[type=text],input[type=password]{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+button{width:100%;padding:12px;border-radius:10px;border:0;background:linear-gradient(90deg,var(--accent),#7c3aed);color:#051426;font-weight:700;cursor:pointer}
+.small{font-size:13px;color:rgba(234,246,255,0.7);margin-top:10px;text-align:center}
+.error{background:#ffefef;color:#8b0000;padding:8px;border-radius:8px;margin-bottom:10px}
+@media (max-width:960px){.container{grid-template-columns:1fr;}}
 </style>
 </head>
 <body>
-<div class="login-box">
-<h2>پنل لورنا</h2>
-{% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
-<form method="POST">
-<input type="text" name="username" placeholder="نام کاربری" required>
-<input type="password" name="password" placeholder="رمز عبور" required>
-<input type="text" name="license" placeholder="کد لایسنس" required>
-<button type="submit">ورود</button>
-</form>
+<div class="container">
+  <div class="panel">
+    <div class="brand"><div class="logo">L</div><div><h1>لورنا — پنل مانیتورینگ</h1><div class="small">نظارت لحظه‌ای سیستم و شبکه</div></div></div>
+    <div class="features">
+      <ul>
+        <li>گراف‌های دایره‌ای زیبا برای CPU و RAM</li>
+        <li>نمایش سرعت شبکه (آپلود/دانلود) بر حسب Mbps</li>
+        <li>تم روشن / تیره / AMOLED — ذخیره در مرورگر</li>
+        <li>لایسنس ساده: <strong>lorna</strong></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>ورود به پنل</h3>
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+    <form method="POST">
+      <div class="field"><input type="text" name="username" placeholder="نام کاربری" required></div>
+      <div class="field"><input type="password" name="password" placeholder="رمز عبور" required></div>
+      <div class="field"><input type="text" name="license" placeholder="کد لایسنس (lorna)" required></div>
+      <button type="submit">ورود</button>
+    </form>
+    <div class="small">نام کاربری/رمز پیش‌فرض: <strong>admin / admin123</strong></div>
+  </div>
 </div>
 </body>
 </html>
 '''
 
+# داشبورد با ApexCharts (گیج‌های دایره‌ای) و تم‌ها + تنظیم Link Max
 dashboard_page = '''
-<!DOCTYPE html>
-<html lang="fa">
+<!doctype html>
+<html lang="fa" dir="rtl">
 <head>
-<meta charset="UTF-8">
-<title>داشبورد مانیتورینگ لورنا</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-chart-gauge@3.0.0/dist/chartjs-chart-gauge.min.js"></script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>لورنا — داشبورد</title>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-body { font-family: sans-serif; margin:0; padding:0; }
-header { background:#0f172a; color:white; padding:10px; display:flex; justify-content:space-between; align-items:center; }
-.container { padding:20px; display:flex; flex-wrap:wrap; gap:20px; justify-content:center; }
-.card { background:#1e293b; padding:20px; border-radius:10px; text-align:center; color:white; }
-.light header { background:#f8f9fa; color:#000; }
-.light .card { background:white; color:black; }
-.amoled header { background:black; color:#0ff; }
-.amoled .card { background:black; color:#0ff; }
+:root{
+  --bg-color:#04102a;
+  --card-bg: rgba(255,255,255,0.03);
+  --text:#eaf6ff;
+  --muted:rgba(234,246,255,0.7);
+  --accent:#06b6d4;
+}
+body{margin:0;font-family:'Vazirmatn',sans-serif;background:linear-gradient(180deg,var(--bg-color),#071b3b);color:var(--text);min-height:100vh}
+.header{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;background:var(--card-bg);backdrop-filter:blur(6px)}
+.brand{display:flex;align-items:center;gap:12px}
+.brand .logo{width:44px;height:44;border-radius:10px;background:linear-gradient(90deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700}
+.controls{display:flex;gap:10px;align-items:center}
+.container{padding:20px;display:grid;grid-template-columns:1fr 360px;gap:18px}
+.panel{background:var(--card-bg);padding:18px;border-radius:12px}
+.gauges{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
+.gauge-card{width:220px;text-align:center}
+.small{color:var(--muted);font-size:13px}
+.rightcol{display:flex;flex-direction:column;gap:14px}
+.input-inline{display:flex;gap:8px;align-items:center}
+.btn{padding:8px 12px;border-radius:8px;border:0;background:linear-gradient(90deg,var(--accent),#7c3aed);color:#041026;font-weight:700;cursor:pointer}
+.footer{padding:14px;text-align:center;color:var(--muted)}
+/* light theme */
+body.light{ --bg-color:#f7fafc; --card-bg: #ffffff; --text:#111827; --muted:rgba(17,24,39,0.6); --accent:#0ea5a4;}
+/* amoled */
+body.amoled{ --bg-color:#000000; --card-bg: rgba(255,255,255,0.02); --text:#00ffcc; --muted:rgba(0,255,204,0.5); --accent:#00ffd1;}
+@media (max-width:980px){ .container{grid-template-columns:1fr} .rightcol{order:2} }
 </style>
 </head>
-<body class="dark">
-<header>
-  <div>داشبورد لورنا</div>
-  <div>
-    <a href="{{ url_for('logout') }}" style="color:white;margin-right:10px;">خروج</a>
-    <select id="themeSelector" onchange="changeTheme(this.value)">
-      <option value="dark">تیره</option>
-      <option value="light">روشن</option>
-      <option value="amoled">AMOLED</option>
-    </select>
+<body>
+<div class="header">
+  <div class="brand"><div class="logo">L</div><div><strong>لورنا</strong><div class="small">پنل مانیتورینگ</div></div></div>
+  <div class="controls">
+    <div class="small">IP: <strong>{{ request.remote_addr }}</strong></div>
+    <a href="{{ url_for('logout') }}" class="btn" style="text-decoration:none">خروج</a>
   </div>
-</header>
-
-<div class="container">
-{% if not license_ok %}
-  <div class="card">
-    <h3>کد لایسنس وارد کنید</h3>
-    {% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
-    <form method="POST" action="{{ url_for('set_license') }}">
-      <input type="text" name="license" placeholder="کد لایسنس" required>
-      <button type="submit">ثبت</button>
-    </form>
-  </div>
-{% else %}
-  <div class="card"><canvas id="cpuGauge" width="180" height="180"></canvas><p>CPU (%)</p></div>
-  <div class="card"><canvas id="ramGauge" width="180" height="180"></canvas><p>RAM (%)</p></div>
-  <div class="card"><canvas id="upGauge" width="180" height="180"></canvas><p>آپلود (MB)</p></div>
-  <div class="card"><canvas id="downGauge" width="180" height="180"></canvas><p>دانلود (MB)</p></div>
-{% endif %}
 </div>
 
+<div class="container">
+  <div class="panel">
+    <h3>وضعیت سیستم</h3>
+    {% if not license_ok %}
+      <div style="padding:12px;border-radius:8px;background:rgba(255,0,0,0.05);margin-bottom:12px">
+        <strong>لایسنس ثبت نشده یا نامعتبر است.</strong>
+        <div class="small">برای نمایش گراف‌ها کد لایسنس را وارد کنید (lorna)</div>
+        {% if error %}<div style="color:#ffb4b4;margin-top:8px">{{ error }}</div>{% endif %}
+        <form method="POST" action="{{ url_for('set_license') }}" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <input name="license" placeholder="lorna" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)">
+          <button class="btn" type="submit">ثبت لایسنس</button>
+        </form>
+      </div>
+    {% else %}
+      <div class="gauges">
+        <div class="gauge-card panel">
+          <div id="cpuChart"></div>
+          <div class="small">CPU</div>
+          <div id="cpuText" class="small" style="margin-top:6px">-- %</div>
+        </div>
+
+        <div class="gauge-card panel">
+          <div id="ramChart"></div>
+          <div class="small">RAM</div>
+          <div id="ramText" class="small" style="margin-top:6px">-- %</div>
+        </div>
+
+        <div class="gauge-card panel">
+          <div id="upChart"></div>
+          <div class="small">آپلود (نسبت به لینک)</div>
+          <div id="upText" class="small" style="margin-top:6px">-- Mbps</div>
+        </div>
+
+        <div class="gauge-card panel">
+          <div id="downChart"></div>
+          <div class="small">دانلود (نسبت به لینک)</div>
+          <div id="downText" class="small" style="margin-top:6px">-- Mbps</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px" class="small">
+        نمودارها هر 2 ثانیه آپدیت می‌شوند. برای مقایسه آپلود/دانلود درصدی، پهنای باند لینک خود را (Mbps) وارد کنید.
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="rightcol">
+    <div class="panel">
+      <h4>تنظیمات</h4>
+      <div class="small">تم: <select id="themeSel" onchange="setTheme(this.value)"><option value="dark">تیره</option><option value="light">روشن</option><option value="amoled">AMOLED</option></select></div>
+      <div style="height:10px"></div>
+      <div class="small">حداکثر لینک (Mbps):</div>
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <input id="linkMax" type="number" min="1" value="100" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);width:140px">
+        <button class="btn" onclick="saveLinkMax()">ذخیره</button>
+      </div>
+      <div style="height:12px"></div>
+      <div class="panel">
+        <h4>دستورات</h4>
+        <div class="small">برای اجرای دستی:</div>
+        <pre style="background:transparent;color:var(--muted);padding:8px;border-radius:6px">source {{ venv }}/bin/activate && python {{ app_path }}/app.py</pre>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h4>اطلاعات</h4>
+      <div class="small">وضعیت لایسنس: <strong>{{ 'معتبر' if license_ok else 'نامعتبر' }}</strong></div>
+      <div style="height:8px"></div>
+      <div class="small">نسخه: 1.0</div>
+    </div>
+  </div>
+</div>
+
+<div class="footer">© lorna panel</div>
+
+<!-- ApexCharts -->
+<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
 <script>
-let gauges = {};
-function gaugeConfig(max){
-  return {
-    type: 'gauge',
-    data: { datasets: [{ value: 0, data: [0, max], backgroundColor: ['#22c55e','#eab308','#ef4444'] }] },
-    options: { responsive:true, needle: { radiusPercentage: 2, widthPercentage: 3.2, lengthPercentage: 80, color: 'rgba(0, 0, 0, 1)' } }
+/* helpers */
+function formatNum(v){
+  if(v>=1000) return (v/1000).toFixed(2)+' G';
+  if(v>=1) return v.toFixed(2);
+  if(v>0.001) return (v*1000).toFixed(2)+' m';
+  return v.toFixed(3);
+}
+
+/* theme */
+function setTheme(t){
+  if(t==='dark') document.body.className='';
+  else if(t==='light') document.body.className='light';
+  else if(t==='amoled') document.body.className='amoled';
+  localStorage.setItem('lorna_theme', t);
+  document.getElementById('themeSel').value = t;
+}
+function loadTheme(){
+  const t = localStorage.getItem('lorna_theme') || 'dark';
+  setTheme(t);
+}
+
+/* link max */
+function saveLinkMax(){
+  const v = parseFloat(document.getElementById('linkMax').value) || 100;
+  localStorage.setItem('lorna_link_max', v);
+  alert('ذخیره شد: ' + v + ' Mbps');
+}
+function getLinkMax(){
+  return parseFloat(localStorage.getItem('lorna_link_max')) || parseFloat(document.getElementById('linkMax').value) || 100;
+}
+
+/* ساخت گیج‌ها با ApexCharts (radialBar) */
+function createRadial(selector, label, unit){
+  const options = {
+    chart: { type: 'radialBar', height: 220 },
+    series: [0],
+    plotOptions: {
+      radialBar: {
+        startAngle: -135,
+        endAngle: 135,
+        hollow: { size: '60%' },
+        track: { background: 'rgba(255,255,255,0.06)' },
+        dataLabels: {
+          name: { show: true, fontSize: '14px', offsetY: -6 },
+          value: { show: true, fontSize: '20px', offsetY: 10, formatter: function(val){ return val + (unit||'') } }
+        }
+      }
+    },
+    labels: [label],
+    stroke: { lineCap: 'round' }
   };
+  const chart = new ApexCharts(document.querySelector(selector), options);
+  chart.render();
+  return chart;
 }
-function initGauges(){
-  gauges.cpu = new Chart(document.getElementById('cpuGauge'), gaugeConfig(100));
-  gauges.ram = new Chart(document.getElementById('ramGauge'), gaugeConfig(100));
-  gauges.up  = new Chart(document.getElementById('upGauge'), gaugeConfig(1000));
-  gauges.down= new Chart(document.getElementById('downGauge'), gaugeConfig(1000));
+
+/* init */
+let cpuChart, ramChart, upChart, downChart;
+function initCharts(){
+  cpuChart = createRadial('#cpuChart', 'CPU', '%');
+  ramChart = createRadial('#ramChart', 'RAM', '%');
+  upChart  = createRadial('#upChart', 'آپلود', '%');
+  downChart= createRadial('#downChart', 'دانلود', '%');
 }
-function updateGauges(cpu, ram, up, down){
-  gauges.cpu.data.datasets[0].value = cpu;
-  gauges.ram.data.datasets[0].value = ram;
-  gauges.up.data.datasets[0].value  = up;
-  gauges.down.data.datasets[0].value= down;
-  for(let g in gauges) gauges[g].update();
+
+/* آپدیت دوره‌ای */
+async function fetchAndUpdate(){
+  try{
+    const res = await fetch('/get_system_data');
+    const d = await res.json();
+    const cpu = Math.round(d.cpu*10)/10;
+    const ram = Math.round(d.ram*10)/10;
+    const up_mbps = d.net.upload_mbps || 0;
+    const down_mbps = d.net.download_mbps || 0;
+    // درصد نسبت به لینک
+    const linkMax = getLinkMax() || 100;
+    const up_pct = Math.min(100, Math.round((up_mbps / linkMax) * 1000)/10);
+    const down_pct = Math.min(100, Math.round((down_mbps / linkMax) * 1000)/10);
+
+    // update charts
+    if(cpuChart) cpuChart.updateSeries([cpu]);
+    if(ramChart) ramChart.updateSeries([ram]);
+    if(upChart) upChart.updateSeries([up_pct]);
+    if(downChart) downChart.updateSeries([down_pct]);
+
+    // numeric text
+    document.getElementById('cpuText').innerText = cpu + ' %';
+    document.getElementById('ramText').innerText = ram + ' %';
+    document.getElementById('upText').innerText = (up_mbps).toFixed(3) + ' Mbps (' + up_pct + '%)';
+    document.getElementById('downText').innerText = (down_mbps).toFixed(3) + ' Mbps (' + down_pct + '%)';
+  }catch(e){
+    // ignore transient errors
+    console.warn('fetch error', e);
+  }
 }
-function fetchAndUpdate(){
-  fetch('/get_system_data').then(r=>r.json()).then(d=>{
-    updateGauges(d.cpu, d.ram, d.net.upload, d.net.download);
-  });
-}
-function changeTheme(mode){
-  document.body.className = mode;
-  localStorage.setItem('theme', mode);
-}
-if({{ 'true' if license_ok else 'false' }}){
-  initGauges();
-  fetchAndUpdate();
-  setInterval(fetchAndUpdate, 3000);
-}
-document.body.className = localStorage.getItem('theme') || 'dark';
+
+/* شروع */
+window.addEventListener('load', ()=>{
+  loadTheme();
+  // مقدار اولیه linkMax از localStorage
+  document.getElementById('linkMax').value = localStorage.getItem('lorna_link_max') || 100;
+  initCharts();
+  // اگر لایسنس معتبر است، شروع رفرش
+  if({{ 'true' if license_ok else 'false' }}){
+    fetchAndUpdate();
+    setInterval(fetchAndUpdate, 2000); // هر 2 ثانیه
+  }
+});
 </script>
 </body>
 </html>
 '''
 
-def get_network_usage():
-    try:
-        result = subprocess.check_output("vnstat --json", shell=True).decode()
-        data = json.loads(result)
-        rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024
-        tx_bytes = data['interfaces'][0]['traffic']['day'][0]['tx'] * 1024
-        return {'upload': round(tx_bytes / (1024*1024), 2), 'download': round(rx_bytes / (1024*1024), 2)}
-    except Exception:
-        return {'upload': 0, 'download': 0}
-
+# مسیرهای Flask
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if 'logged_in' in session:
         return redirect(url_for('dashboard'))
     error = None
     if request.method == 'POST':
-        if request.form['username'] == USERNAME and request.form['password'] == PASSWORD:
+        username = request.form.get('username','').strip()
+        password = request.form.get('password','').strip()
+        license_key = request.form.get('license','').strip()
+        if username == USERNAME and password == PASSWORD:
             session['logged_in'] = True
-            session['license_ok'] = verify_license(request.form['license'])
+            session['license_ok'] = verify_license(license_key)
             return redirect(url_for('dashboard'))
         else:
             error = 'نام کاربری یا رمز عبور اشتباه است'
     return render_template_string(login_page, error=error)
 
-@app.route('/dashboard')
+@app.route('/dashboard', methods=['GET'])
 def dashboard():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_percent = psutil.cpu_percent(interval=0.1)
     ram_percent = psutil.virtual_memory().percent
-    net = get_network_usage()
-    return render_template_string(dashboard_page, cpu=cpu_percent, ram=ram_percent, net=net, license_ok=session.get('license_ok', False), error=None)
+    up_mbps, down_mbps = get_network_speed_mbps()
+    return render_template_string(dashboard_page,
+                                  cpu=cpu_percent,
+                                  ram=ram_percent,
+                                  net={'upload_mbps': up_mbps, 'download_mbps': down_mbps},
+                                  license_ok=session.get('license_ok', False),
+                                  error=None,
+                                  request=request,
+                                  venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
+                                  app_path=os.path.dirname(__file__))
 
 @app.route('/set_license', methods=['POST'])
 def set_license():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    if verify_license(request.form['license']):
+    license_key = request.form.get('license','').strip()
+    if verify_license(license_key):
         session['license_ok'] = True
         return redirect(url_for('dashboard'))
     else:
-        cpu_percent = psutil.cpu_percent(interval=1)
-        ram_percent = psutil.virtual_memory().percent
-        net = get_network_usage()
-        return render_template_string(dashboard_page, cpu=cpu_percent, ram=ram_percent, net=net, license_ok=False, error="کد لایسنس نامعتبر است")
+        return render_template_string(dashboard_page,
+                                      cpu=psutil.cpu_percent(interval=0.1),
+                                      ram=psutil.virtual_memory().percent,
+                                      net={'upload_mbps': 0, 'download_mbps': 0},
+                                      license_ok=False,
+                                      error="کد لایسنس نامعتبر است",
+                                      request=request,
+                                      venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
+                                      app_path=os.path.dirname(__file__))
 
 @app.route('/get_system_data')
 def get_system_data():
-    return jsonify({'cpu': psutil.cpu_percent(interval=1), 'ram': psutil.virtual_memory().percent, 'net': get_network_usage()})
+    # CPU و RAM و سرعت شبکه (بر حسب Mbps)
+    cpu = psutil.cpu_percent(interval=0.1)
+    ram = psutil.virtual_memory().percent
+    up, down = get_network_speed_mbps()
+    return jsonify({'cpu': cpu, 'ram': ram, 'net': {'upload_mbps': up, 'download_mbps': down}})
 
 @app.route('/logout')
 def logout():
@@ -216,17 +462,22 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
+    # for production بهتره از gunicorn / systemd استفاده کنید
     app.run(host='0.0.0.0', port=5000)
-EOF
+PYEOF
 
-    echo "پنل نصب شد. برای اجرا دستور زیر را بزنید:"
-    echo "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
+    echo "[+] نصب کامل شد."
+    echo "برای اجرای پنل:"
+    echo "  source $VENV_DIR/bin/activate"
+    echo "  python $APP_DIR/app.py"
+    echo "سپس با مرورگر به: http://<IP-Server>:$APP_PORT بروید."
+    echo "لایسنس پیش‌فرض: $LICENSE_VALUE"
 
 elif [ "$CHOICE" == "2" ]; then
-    echo "در حال حذف..."
-    pkill -f "$APP_DIR/app.py"
+    echo "[*] حذف پنل..."
+    pkill -f "$APP_DIR/app.py" || true
     rm -rf "$APP_DIR"
-    echo "پاک شد."
+    echo "[+] حذف انجام شد."
 else
-    echo "گزینه نامعتبر!"
+    echo "گزینه نامعتبر."
 fi
