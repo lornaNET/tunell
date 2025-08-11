@@ -1,5 +1,7 @@
 #!/bin/bash
 
+set -e
+
 echo "=== نصب پنل مانیتورینگ شبکه و سیستم لورنا روی اوبونتو 22.04 ==="
 echo "1) نصب و اجرای پنل"
 echo "2) حذف پنل"
@@ -12,103 +14,318 @@ USER="admin"
 PASS="admin123"
 LICENSE_FILE="$APP_DIR/license.key"
 
-# تابع برای تولید کد لایسنس
-generate_license() {
-    echo "lorna-$(openssl rand -hex 12)" > "$LICENSE_FILE"
-    echo "کد لایسنس تولید شد: $(cat $LICENSE_FILE)"
-}
+# لایسنس ثابت
+LICENSE_VALUE="lorna"
 
 if [ "$CHOICE" == "1" ]; then
     echo "در حال نصب پیش‌نیازها..."
-    apt update && apt install -y python3 python3-venv python3-pip vnstat
+    apt update
+    apt install -y python3 python3-venv python3-pip vnstat
 
-    # ایجاد دایرکتوری برنامه
+    echo "ایجاد دایرکتوری برنامه..."
     mkdir -p "$APP_DIR"
-    
-    # ساخت محیط مجازی پایتون
+
+    echo "$LICENSE_VALUE" > "$LICENSE_FILE"
+    chmod 600 "$LICENSE_FILE"
+
+    echo "ساخت محیط مجازی پایتون..."
     python3 -m venv "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
 
-    # نصب پیش‌نیازهای پایتون
-    pip install flask psutil
+    echo "نصب پکیج‌های پایتونی..."
+    pip install --upgrade pip >/dev/null
+    pip install flask psutil >/dev/null
 
-    # تولید کد لایسنس
-    generate_license
-
-    # ایجاد فایل برنامه Flask
-    cat > "$APP_DIR/app.py" << 'EOF'
+    echo "ایجاد فایل برنامه Flask..."
+    cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
 import psutil
 import subprocess
 import os
 import json
+from datetime import timedelta
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_lorna'
+app.secret_key = 'super_secret_key_lorna_change_this'  # در محیط production این را امن کن
+app.permanent_session_lifetime = timedelta(hours=2)
 
 USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
 def verify_license(license_key):
-    if not os.path.exists(LICENSE_FILE):
+    # لایسنس ثابت: lorna
+    try:
+        if os.path.exists(LICENSE_FILE):
+            with open(LICENSE_FILE, 'r') as f:
+                stored = f.read().strip()
+            return license_key.strip() == stored
+        else:
+            return license_key.strip() == "lorna"
+    except Exception:
         return False
-    with open(LICENSE_FILE, 'r') as f:
-        stored_license = f.read().strip()
-    return license_key.strip() == stored_license
 
+# قالب صفحه ورود (گرافیکی)
 login_page = '''
 <!DOCTYPE html>
-<html lang="fa">
-<head><meta charset="UTF-8"><title>ورود به پنل لورنا</title></head>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>لورنا — ورود</title>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{--bg1:#0f172a;--bg2:#0b2545;--card:#0f172a;--accent:#06b6d4}
+  *{box-sizing:border-box;font-family:'Vazirmatn',sans-serif}
+  body{margin:0;min-height:100vh;background:linear-gradient(135deg,var(--bg1),var(--bg2));display:flex;align-items:center;justify-content:center;color:#e6eef8}
+  .wrap{width:92%;max-width:980px;display:grid;grid-template-columns:1fr 420px;gap:30px;padding:40px}
+  .left{padding:30px;border-radius:14px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));backdrop-filter: blur(6px);box-shadow:0 10px 30px rgba(2,6,23,0.6)}
+  .logo{display:flex;align-items:center;gap:12px}
+  .logo .mark{width:64px;height:64px;border-radius:12px;background:linear-gradient(135deg,#06b6d4,#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:white;font-size:26px;box-shadow:0 6px 18px rgba(4,9,23,0.6)}
+  h1{margin:18px 0 6px;font-size:24px}
+  p.lead{margin:0;color:rgba(230,238,248,0.8)}
+  ul.features{margin-top:20px;padding-left:18px}
+  ul.features li{margin:10px 0;color:rgba(230,238,248,0.85)}
+  .right{display:flex;align-items:center;justify-content:center}
+  .card{width:100%;max-width:420px;background:linear-gradient(180deg,rgba(255,255,255,0.03),rgba(255,255,255,0.02));padding:28px;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.6)}
+  .card h2{margin:0 0 14px}
+  .field{margin-bottom:12px}
+  .field label{display:block;margin-bottom:6px;font-size:13px;color:rgba(230,238,248,0.9)}
+  .field input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+  .btn{width:100%;padding:12px;border-radius:10px;border:0;background:linear-gradient(90deg,var(--accent),#7c3aed);color:#051426;font-weight:700;cursor:pointer;margin-top:8px}
+  .muted{font-size:13px;color:rgba(230,238,248,0.6);margin-top:12px;text-align:center}
+  .error{background:#ffefef;color:#8b0000;padding:8px;border-radius:8px;margin-bottom:10px}
+  .showpass{cursor:pointer;font-size:13px;color:var(--accent);display:inline-block;margin-top:6px}
+  @media (max-width:920px){.wrap{grid-template-columns:1fr;gap:18px;padding:18px}}
+</style>
+</head>
 <body>
-<h2>ورود به پنل لورنا</h2>
-{% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
-<form method="POST">
-  <label>نام کاربری:</label><br>
-  <input type="text" name="username" required><br><br>
-  <label>رمز عبور:</label><br>
-  <input type="password" name="password" required><br><br>
-  <label>کد لایسنس:</label><br>
-  <input type="text" name="license" required><br><br>
-  <button type="submit">ورود</button>
-</form>
+<div class="wrap">
+  <div class="left">
+    <div class="logo"><div class="mark">L</div><div>
+      <h1>لورنا — پنل مانیتورینگ</h1>
+      <p class="lead">نمایش وضعیت سیستم و ترافیک شبکه به‌صورت لحظه‌ای و امن.</p>
+    </div></div>
+
+    <ul class="features">
+      <li>نظارت لحظه‌ای مصرف CPU و RAM</li>
+      <li>گزارش ترافیک شبکه (vnStat)</li>
+      <li>مدیریت لایسنس ساده — کد: <strong>lorna</strong></li>
+      <li>قابل اجرا روی اوبونتو 22.04</li>
+    </ul>
+
+  </div>
+
+  <div class="right">
+    <div class="card">
+      <h2>ورود به پنل</h2>
+      {% if error %}
+      <div class="error">{{ error }}</div>
+      {% endif %}
+      <form method="POST">
+        <div class="field">
+          <label>نام کاربری</label>
+          <input type="text" name="username" required placeholder="admin">
+        </div>
+        <div class="field">
+          <label>رمز عبور</label>
+          <input id="pwd" type="password" name="password" required placeholder="••••••••">
+          <div class="showpass" onclick="togglePwd()">نمایش/مخفی کردن رمز</div>
+        </div>
+        <div class="field">
+          <label>کد لایسنس</label>
+          <input type="text" name="license" required placeholder="lorna">
+        </div>
+        <button class="btn" type="submit">ورود</button>
+        <div class="muted">در صورت فراموشی، نام کاربری و رمز پیش‌فرض <strong>admin/admin123</strong> است.</div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function togglePwd(){
+  var p=document.getElementById('pwd');
+  if(p.type==='password') p.type='text'; else p.type='password';
+}
+</script>
 </body>
 </html>
 '''
 
+# داشبورد گرافیکی با Chart.js و دکمه‌ی وارد کردن لایسنس اگر لازم بود
 dashboard_page = '''
 <!DOCTYPE html>
-<html lang="fa">
-<head><meta charset="UTF-8"><title>داشبورد مانیتورینگ لورنا</title></head>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>لورنا — داشبورد</title>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
+<style>
+  body{margin:0;font-family:'Vazirmatn',sans-serif;background:linear-gradient(180deg,#04102a,#071b3b);color:#eaf6ff;min-height:100vh}
+  header{display:flex;justify-content:space-between;align-items:center;padding:18px 28px;background:rgba(255,255,255,0.02);backdrop-filter:blur(6px)}
+  .brand{display:flex;align-items:center;gap:12px}
+  .brand .mark{width:44px;height:44;border-radius:10px;background:linear-gradient(90deg,#06b6d4,#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700}
+  main{padding:26px;display:grid;grid-template-columns:1fr 420px;gap:20px}
+  .card{background:rgba(255,255,255,0.02);padding:18px;border-radius:12px}
+  .bigcard{grid-column:1/2}
+  .rightcol{grid-column:2/3;display:flex;flex-direction:column;gap:18px}
+  .stat{display:flex;justify-content:space-between;align-items:center;padding:12px;border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,0.01),transparent)}
+  .license{padding:12px;border-radius:10px;background:rgba(255,255,255,0.02)}
+  .btn{padding:10px 12px;border-radius:8px;border:0;background:linear-gradient(90deg,#06b6d4,#7c3aed);color:#041026;font-weight:700;cursor:pointer}
+  footer{padding:18px;text-align:center;color:rgba(234,246,255,0.6)}
+  @media (max-width:920px){main{grid-template-columns:1fr;}}
+</style>
+</head>
 <body>
-<a href="{{ url_for('logout') }}">خروج</a>
-<h2>داشبورد مانیتورینگ لورنا</h2>
-{% if not license_ok %}
-  <h3>لطفاً کد لایسنس معتبر وارد کنید:</h3>
-  {% if error %}<p style="color:red;">{{ error }}</p>{% endif %}
-  <form method="POST" action="{{ url_for('set_license') }}">
-    <input type="text" name="license" placeholder="کد لایسنس" required>
-    <button type="submit">ثبت</button>
-  </form>
-{% else %}
-  <h3>مصرف CPU: {{ cpu }}%</h3>
-  <h3>مصرف RAM: {{ ram }}%</h3>
-  <h3>ترافیک شبکه: آپلود {{ net['upload'] }} MB | دانلود {{ net['download'] }} MB</h3>
-{% endif %}
+<header>
+  <div class="brand"><div class="mark">L</div><div><strong>لورنا</strong><div style="font-size:12px;color:rgba(234,246,255,0.7)">پنل مانیتورینگ</div></div></div>
+  <div>
+    <a href="{{ url_for('logout') }}" style="color:#eaf6ff;text-decoration:none;margin-left:12px">خروج</a>
+  </div>
+</header>
+
+<main>
+  <div class="card bigcard">
+    <h3>وضعیت کلی سیستم</h3>
+    {% if not license_ok %}
+      <div class="license">
+        <p>لایسنس ثبت نشده یا نامعتبر است. برای نمایش گراف‌ها کد لایسنس را وارد کنید.</p>
+        <form method="POST" action="{{ url_for('set_license') }}">
+          <input style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);width:220px" name="license" placeholder="lorna" required>
+          <button class="btn" type="submit">ثبت لایسنس</button>
+        </form>
+        {% if error %}<p style="color:#ffb4b4;margin-top:8px">{{ error }}</p>{% endif %}
+      </div>
+    {% else %}
+      <div style="display:flex;gap:16px;margin-top:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <div class="stat"><div>CPU</div><div id="cpu_val">--%</div></div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <div class="stat"><div>RAM</div><div id="ram_val">--%</div></div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <div class="stat"><div>ترافیک آپلود</div><div id="up_val">-- MB</div></div>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <div class="stat"><div>ترافیک دانلود</div><div id="down_val">-- MB</div></div>
+        </div>
+      </div>
+
+      <div style="margin-top:18px;">
+        <canvas id="sysChart" height="120"></canvas>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="rightcol">
+    <div class="card">
+      <h4>اطلاعات سرور</h4>
+      <p>آی‌پی: <strong>{{ request.remote_addr }}</strong></p>
+      <p>وضعیت لایسنس: <strong>{{ 'معتبر' if license_ok else 'نامعتبر' }}</strong></p>
+    </div>
+
+    <div class="card">
+      <h4>دستورات سریع</h4>
+      <p>برای اجرای دستی پنل: <code>source {{ venv }}/bin/activate && python {{ app_path }}/app.py</code></p>
+    </div>
+  </div>
+</main>
+
+<footer>© lorna panel</footer>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+const license_ok = {{ 'true' if license_ok else 'false' }};
+
+function fetchAndUpdate(){
+  fetch('/get_system_data').then(r=>r.json()).then(d=>{
+    if(!license_ok) return;
+    document.getElementById('cpu_val').innerText = d.cpu + '%';
+    document.getElementById('ram_val').innerText = d.ram + '%';
+    document.getElementById('up_val').innerText = d.net.upload + ' MB';
+    document.getElementById('down_val').innerText = d.net.download + ' MB';
+
+    addData(d.cpu, d.ram);
+  }).catch(e=>{
+    // ignore
+  });
+}
+
+// Chart.js simple line chart
+let chart;
+function initChart(){
+  const ctx = document.getElementById('sysChart').getContext('2d');
+  chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: Array(20).fill(''),
+      datasets: [{
+        label: 'CPU %',
+        data: Array(20).fill(null),
+        tension: 0.35,
+        borderWidth: 2,
+        fill: false
+      },{
+        label: 'RAM %',
+        data: Array(20).fill(null),
+        tension: 0.35,
+        borderWidth: 2,
+        fill: false
+      }]
+    },
+    options: {
+      responsive: true,
+      interaction: {mode:'index', intersect:false},
+      scales: {y:{beginAtZero:true, max:100}}
+    }
+  });
+}
+
+function addData(cpu, ram){
+  if(!chart) return;
+  chart.data.datasets[0].data.push(cpu);
+  chart.data.datasets[1].data.push(ram);
+  chart.data.datasets[0].data.shift();
+  chart.data.datasets[1].data.shift();
+  chart.update('none');
+}
+
+if(license_ok){
+  initChart();
+  fetchAndUpdate();
+  setInterval(fetchAndUpdate, 3000);
+}
+</script>
 </body>
 </html>
 '''
 
 def get_network_usage():
     try:
-        result = subprocess.check_output("vnstat --json", shell=True).decode()
+        result = subprocess.check_output("vnstat --json", shell=True, stderr=subprocess.DEVNULL).decode()
         data = json.loads(result)
-        rx_bytes = data['interfaces'][0]['traffic']['day'][0]['rx'] * 1024
-        tx_bytes = data['interfaces'][0]['traffic']['day'][0]['tx'] * 1024
-        return {'upload': round(tx_bytes / (1024*1024), 2), 'download': round(rx_bytes / (1024*1024), 2)}
+        # فرض بر اینکه اینترفیسی وجود دارد و داده روزانه قابل دسترس است
+        if 'interfaces' in data and len(data['interfaces'])>0 and 'traffic' in data['interfaces'][0]:
+            # may vary by vnstat version — محافظتی
+            day = data['interfaces'][0]['traffic'].get('day', [])
+            if len(day)>0:
+                rx = day[0].get('rx', 0) * 1024
+                tx = day[0].get('tx', 0) * 1024
+                return {'upload': round(tx / (1024*1024), 2), 'download': round(rx / (1024*1024), 2)}
+        return {'upload': 0, 'download': 0}
     except Exception:
         return {'upload': 0, 'download': 0}
+
+@app.route('/get_system_data')
+def get_system_data():
+    cpu_percent = psutil.cpu_percent(interval=0.5)
+    ram = psutil.virtual_memory()
+    ram_percent = ram.percent
+    net = get_network_usage()
+    return jsonify({'cpu': cpu_percent, 'ram': ram_percent, 'net': net})
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
@@ -116,10 +333,11 @@ def login():
         return redirect(url_for('dashboard'))
     error = None
     if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        license_key = request.form['license']
+        username = request.form.get('username','').strip()
+        password = request.form.get('password','').strip()
+        license_key = request.form.get('license','').strip()
         if username == USERNAME and password == PASSWORD:
+            session.permanent = True
             session['logged_in'] = True
             session['license_ok'] = verify_license(license_key)
             return redirect(url_for('dashboard'))
@@ -127,11 +345,11 @@ def login():
             error = 'نام کاربری یا رمز عبور اشتباه است'
     return render_template_string(login_page, error=error)
 
-@app.route('/dashboard')
+@app.route('/dashboard', methods=['GET'])
 def dashboard():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    cpu_percent = psutil.cpu_percent(interval=1)
+    cpu_percent = psutil.cpu_percent(interval=0.5)
     ram_percent = psutil.virtual_memory().percent
     net = get_network_usage()
     return render_template_string(dashboard_page,
@@ -139,18 +357,21 @@ def dashboard():
                                   ram=ram_percent,
                                   net=net,
                                   license_ok=session.get('license_ok', False),
-                                  error=None)
+                                  error=None,
+                                  request=request,
+                                  venv=app.root_path,
+                                  app_path=os.path.dirname(__file__))
 
 @app.route('/set_license', methods=['POST'])
 def set_license():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    license_key = request.form['license']
+    license_key = request.form.get('license','').strip()
     if verify_license(license_key):
         session['license_ok'] = True
         return redirect(url_for('dashboard'))
     else:
-        cpu_percent = psutil.cpu_percent(interval=1)
+        cpu_percent = psutil.cpu_percent(interval=0.5)
         ram_percent = psutil.virtual_memory().percent
         net = get_network_usage()
         return render_template_string(dashboard_page,
@@ -158,7 +379,10 @@ def set_license():
                                       ram=ram_percent,
                                       net=net,
                                       license_ok=False,
-                                      error="کد لایسنس نامعتبر است")
+                                      error="کد لایسنس نامعتبر است",
+                                      request=request,
+                                      venv=app.root_path,
+                                      app_path=os.path.dirname(__file__))
 
 @app.route('/logout')
 def logout():
@@ -167,17 +391,17 @@ def logout():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-EOF
+PYEOF
 
-    echo "پنل نصب شد. کد لایسنس در $LICENSE_FILE ذخیره شده است."
-    echo "برای اجرای پنل دستور زیر را اجرا کنید:"
+    echo "راه‌اندازی تکمیلی انجام شد."
+    echo "برای اجرای پنل:"
     echo "source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
-    echo "سپس مرورگر را باز کرده و به آدرس http://IP-Server:$APP_PORT بروید."
-    echo "کد لایسنس: $(cat $LICENSE_FILE)"
+    echo "بعد در مرورگر به http://<IP-Server>:$APP_PORT بروید."
+    echo "لایسنس پیش‌فرض: $LICENSE_VALUE"
 
 elif [ "$CHOICE" == "2" ]; then
     echo "در حال حذف پنل..."
-    pkill -f "$APP_DIR/app.py"
+    pkill -f "$APP_DIR/app.py" || true
     rm -rf "$APP_DIR"
     echo "حذف انجام شد."
 else
