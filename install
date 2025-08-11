@@ -1,79 +1,57 @@
 #!/bin/bash
 
-echo "=== مدیریت پنل مانیتورینگ شبکه روی اوبونتو 22.04 ==="
+echo "=== مدیریت پنل مانیتورینگ Netdata روی اوبونتو 22.04 ==="
 echo "1) نصب پنل"
 echo "2) حذف کامل پنل"
 read -p "لطفاً گزینه مورد نظر را وارد کنید (1 یا 2): " CHOICE
 
 if [ "$CHOICE" == "1" ]; then
-    # ================= نصب =================
     read -p "یوزرنیم پنل: " PANEL_USER
     read -sp "پسورد پنل: " PANEL_PASS
     echo
-    read -p "پورت پنل (مثلاً 8080): " PANEL_PORT
+    read -p "پورت پنل (مثلاً 19999): " PANEL_PORT
 
     # به‌روزرسانی سیستم
     apt update && apt upgrade -y
 
-    # نصب ابزارهای مورد نیاز
-    apt install -y vnstat apache2 php php-cli unzip wget apache2-utils libapache2-mod-php
+    # نصب پیش‌نیازها
+    apt install -y curl apache2-utils
 
-    # فعال‌سازی vnStat
-    systemctl enable vnstat
-    systemctl start vnstat
+    # حذف اگر قبلاً نصب بود
+    systemctl stop netdata 2>/dev/null
+    systemctl disable netdata 2>/dev/null
 
-    # پاک کردن صفحه پیش‌فرض Apache
-    rm -f /var/www/html/index.html
+    # نصب Netdata
+    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
 
-    # دانلود رابط وب vnStat (vnstat-php)
-    cd /var/www/html || exit
-    wget -O vnstat.zip https://github.com/bjd/vnstat-php-frontend/archive/master.zip
-    unzip vnstat.zip
-    cp -r vnstat-php-frontend-master/* .
-    rm -rf vnstat-php-frontend-master vnstat.zip
+    # تنظیم پورت دلخواه
+    sed -i "s/^bind port = .*/bind port = $PANEL_PORT/" /etc/netdata/netdata.conf
 
-    # تنظیمات پیش‌فرض پنل (نمایش همه اینترفیس‌ها)
-    sed -i "s/^\$iface_list.*/\$iface_list = array();/" config.php
+    # ایجاد فایل htpasswd برای احراز هویت ساده (Basic Auth)
+    htpasswd -cb /etc/netdata/htpasswd $PANEL_USER $PANEL_PASS
 
-    # ایجاد یوزر و پسورد پنل
-    htpasswd -cb /etc/apache2/.htpasswd "$PANEL_USER" "$PANEL_PASS"
+    # فعال کردن احراز هویت Basic در netdata
+    cat <<EOF >> /etc/netdata/netdata.conf
 
-    # تنظیم پورت سفارشی
-    sed -i "s/^Listen .*/Listen $PANEL_PORT/" /etc/apache2/ports.conf
-    sed -i "s/:80/:$PANEL_PORT/" /etc/apache2/sites-available/000-default.conf
-
-    # فعال‌سازی احراز هویت
-    cat <<EOF >/etc/apache2/conf-available/auth.conf
-<Directory "/var/www/html">
-    DirectoryIndex index.php
-    AuthType Basic
-    AuthName "Login Required"
-    AuthUserFile /etc/apache2/.htpasswd
-    Require valid-user
-</Directory>
+[web]
+  basic auth login file = /etc/netdata/htpasswd
 EOF
-    a2enconf auth
 
-    # فعال کردن PHP در Apache
-    a2enmod php*
-    systemctl restart apache2
+    # راه‌اندازی مجدد netdata
+    systemctl restart netdata
 
     echo "✅ نصب کامل شد."
     echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
     echo "http://IP-Server:$PANEL_PORT"
 
 elif [ "$CHOICE" == "2" ]; then
-    # ================= حذف =================
-    echo "⚠ در حال حذف کامل پنل و پکیج‌های نصب شده..."
-    systemctl stop apache2 vnstat
-    apt remove --purge -y vnstat apache2 php php-cli unzip wget apache2-utils libapache2-mod-php
+    echo "⚠ در حال حذف کامل پنل Netdata..."
+    systemctl stop netdata
+    apt remove --purge -y netdata
     apt autoremove -y
-    rm -rf /var/www/html/*
-    rm -f /etc/apache2/.htpasswd
-    rm -f /etc/apache2/conf-available/auth.conf
-    systemctl daemon-reload
+    rm -f /etc/netdata/htpasswd
+    rm -f /etc/netdata/netdata.conf
     echo "✅ پنل و تمام فایل‌ها حذف شدند."
-
 else
     echo "❌ گزینه نامعتبر!"
 fi
