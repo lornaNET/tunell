@@ -5,7 +5,7 @@ echo "1) نصب و راه‌اندازی پنل"
 echo "2) حذف پنل"
 read -p "انتخاب (1 یا 2): " CHOICE
 
-APP_DIR="/opt/network_monitor"
+APP_DIR="/opt/lorna"
 VENV_DIR="$APP_DIR/venv"
 APP_PORT=5000
 LICENSE_FILE="$APP_DIR/license.key"
@@ -24,6 +24,14 @@ prompt_for_port(){ while true; do read -p "پورت پنل (پیش‌فرض: $AP
 prompt_for_xray_port(){ while true; do read -p "پورت Xray (خالی=غیرفعال): " XRAY_PORT; [[ -z "$XRAY_PORT" ]] && break; [[ ! $XRAY_PORT =~ ^[0-9]+$ || $XRAY_PORT -lt 1 || $XRAY_PORT -gt 65535 ]] && echo "نامعتبر!" && continue; check_port $XRAY_PORT && { read -p "هیچ سرویسی روی پورت نیست. ادامه؟ (y/n): " c; [[ $c != "y" ]] && continue; }; break; done; }
 
 if [ "$CHOICE" == "1" ]; then
+  echo "[*] پاک‌سازی نسخه قبلی..."
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
+  rm -f "$SYSTEMD_FILE"
+  pkill -f "gunicorn.*app:app" 2>/dev/null || true
+  rm -rf "$APP_DIR" "$LOG_DIR"
+  systemctl daemon-reload
+
   echo "[*] بررسی پیش‌نیازها..."
   command -v python3 >/dev/null || { echo "python3 نصب نیست."; exit 1; }
   command -v ss >/dev/null || { apt update && apt install -y iproute2; }
@@ -55,7 +63,7 @@ app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY','key')
 USERNAME = os.environ.get('LORNA_USERNAME','admin')
 PASSWORD = os.environ.get('LORNA_PASSWORD','admin123')
-LICENSE_FILE = "/opt/network_monitor/license.key"
+LICENSE_FILE = "/opt/lorna/license.key"
 LOG_DIR = "/var/log/lorna"
 XRAY_PORT = os.environ.get('XRAY_PORT','')
 os.makedirs(LOG_DIR,exist_ok=True)
@@ -139,16 +147,17 @@ EOF
 
   echo "پنل اجرا شد: http://<IP>:$APP_PORT"
   echo "یوزر/پس: $DEFAULT_USERNAME/$DEFAULT_PASSWORD | لایسنس: $LICENSE_VALUE"
+  echo "اجرای مستقیم تست: source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
   [ -n "$XRAY_PORT" ] && echo "Xray مانیتور روی پورت: $XRAY_PORT"
   echo "لاگ‌ها: $LOG_DIR/lorna.log"
 
 elif [ "$CHOICE" == "2" ]; then
   echo "[*] حذف پنل..."
-  systemctl stop "$SERVICE_NAME" || true
-  systemctl disable "$SERVICE_NAME" || true
+  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$SYSTEMD_FILE"
   systemctl daemon-reload
-  pkill -f "gunicorn.*app:app" || true
+  pkill -f "gunicorn.*app:app" 2>/dev/null || true
   rm -rf "$APP_DIR" "$LOG_DIR"
   echo "[+] حذف انجام شد."
 else
