@@ -40,7 +40,7 @@ function install_panel() {
   echo "[*] ایجاد فایل برنامه Flask..."
   cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
-import psutil, os, time, threading, netifaces, socket
+import psutil, os, time, threading, re
 
 app = Flask(__name__)
 app.secret_key = 'super_secret_key_lorna_change_me'
@@ -110,6 +110,7 @@ def update_tunnel_usage():
 
     with tunnel_lock:
         try:
+            # بررسی وجود اینترفیس tun0 و فعال بودنش
             ifaces = psutil.net_if_stats()
             if 'tun0' in ifaces and ifaces['tun0'].isup:
                 counters = psutil.net_io_counters(pernic=True).get('tun0')
@@ -136,7 +137,7 @@ def update_tunnel_usage():
                     up_MBps = delta_sent / (1024*1024) / dt
                     down_MBps = delta_recv / (1024*1024) / dt
                     return round(up_MBps, 4), round(down_MBps, 4)
-        except Exception as e:
+        except Exception:
             return 0.0, 0.0
 
     return 0.0, 0.0
@@ -276,32 +277,39 @@ main {
 }
 .card {
   background: rgba(255,255,255,0.03);
-  border-radius: 14px;
-  padding: 18px 26px;
-  width: 280px;
+  border-radius: 50%;
+  padding: 24px;
+  width: 160px;
+  height: 160px;
   box-sizing: border-box;
   text-align: center;
   box-shadow: 0 0 12px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
 }
 h2 {
   margin: 10px 0 16px 0;
+  font-size: 20px;
 }
 .value {
   font-size: 36px;
   font-weight: 700;
-  margin-top: 6px;
   color: #7c3aed;
 }
 .label {
   margin-top: 8px;
   font-size: 14px;
   color: rgba(234,246,255,0.7);
+  user-select: none;
 }
 .net-values {
-  font-size: 20px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
   margin: 6px 0 0 0;
   color: #06b6d4;
+  user-select: none;
 }
 #tunnelForm {
   margin: 24px auto;
@@ -315,254 +323,279 @@ h2 {
 }
 #tunnelForm label {
   display: block;
-  margin-bottom: 6px;
-  font-weight: 600;
+  margin-bottom: 8px;
 }
 #tunnelForm input {
   width: 100%;
-  padding: 10px 12px;
+  padding: 8px 12px;
   margin-bottom: 14px;
   border-radius: 8px;
   border: none;
   font-size: 16px;
-  background: rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.1);
   color: #eaf6ff;
 }
 #tunnelForm button {
   width: 100%;
-  padding: 12px 0;
+  padding: 10px 0;
   background: #7c3aed;
   border: none;
   border-radius: 10px;
   font-weight: 700;
-  color: white;
-  cursor: pointer;
   font-size: 18px;
-}
-#showTunnelForm {
-  margin: 20px auto;
-  display: block;
-  padding: 10px 20px;
-  font-weight: 700;
-  background: #7c3aed;
-  color: white;
-  border: none;
-  border-radius: 10px;
+  color: #fff;
   cursor: pointer;
-  transition: background-color 0.3s ease;
-}
-#showTunnelForm:hover {
-  background: #5b2cbf;
-}
-.logout-btn {
-  background: #db2777;
-  color: white;
-  border-radius: 10px;
-  padding: 8px 14px;
-  font-weight: 700;
-  border: none;
-  cursor: pointer;
-  transition: background-color 0.3s ease;
-}
-.logout-btn:hover {
-  background: #9d174d;
 }
 footer {
+  margin-top: 44px;
   text-align: center;
-  margin: 28px 0 12px 0;
-  color: rgba(234,246,255,0.6);
-  font-size: 14px;
+  font-size: 12px;
+  color: rgba(234,246,255,0.5);
+  user-select: none;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 10px 4px #7c3aed; }
+  50% { box-shadow: 0 0 20px 8px #a78bfa; }
+}
+.value.pulse {
+  animation: pulse 2s infinite;
 }
 </style>
+<script>
+function logout() {
+  fetch('/logout').then(() => {
+    window.location.href = '/';
+  });
+}
+function showTunnelForm() {
+  let form = document.getElementById('tunnelForm');
+  if(form.style.display === 'none' || form.style.display === '') {
+    form.style.display = 'block';
+  } else {
+    form.style.display = 'none';
+  }
+}
+function setTunnel() {
+  const ip = document.getElementById('tunnel_ip').value.trim();
+  const port = document.getElementById('tunnel_port').value.trim();
+  fetch('/set_tunnel', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ip, port})
+  }).then(res => res.json()).then(data => {
+    alert(data.message);
+    if(data.success) {
+      document.getElementById('tunnelForm').style.display = 'none';
+    }
+  });
+}
+function fetchStats() {
+  fetch('/stats').then(res => res.json()).then(data => {
+    document.getElementById('net_up').textContent = data.network.upload + ' MB/s';
+    document.getElementById('net_down').textContent = data.network.download + ' MB/s';
+    document.getElementById('net_total_up').textContent = data.network.total_upload.toFixed(2) + ' MB';
+    document.getElementById('net_total_down').textContent = data.network.total_download.toFixed(2) + ' MB';
+
+    document.getElementById('tun_up').textContent = data.tunnel.upload + ' MB/s';
+    document.getElementById('tun_down').textContent = data.tunnel.download + ' MB/s';
+    document.getElementById('tun_total_up').textContent = data.tunnel.total_upload.toFixed(2) + ' MB';
+    document.getElementById('tun_total_down').textContent = data.tunnel.total_download.toFixed(2) + ' MB';
+  });
+}
+setInterval(fetchStats, 2000);
+window.onload = fetchStats;
+</script>
 </head>
 <body>
 <header>
   <h1>داشبورد مانیتورینگ لورنا</h1>
-  <form method="POST" action="/logout" style="margin:0;">
-    <button class="logout-btn" type="submit">خروج</button>
-  </form>
+  <button onclick="logout()">خروج</button>
 </header>
 <main>
   <div class="cards">
     <div class="card">
-      <h2>مصرف CPU</h2>
-      <div class="value" id="cpuUsage">0%</div>
-      <div class="label">درصد استفاده</div>
+      <h2>کل شبکه - آپلود</h2>
+      <div class="value pulse" id="net_up">0.0000 MB/s</div>
+      <div class="label">آپلود فعلی</div>
+      <div class="net-values" id="net_total_up">0.00 MB</div>
+      <div class="label">کل آپلود</div>
     </div>
     <div class="card">
-      <h2>مصرف RAM</h2>
-      <div class="value" id="ramUsage">0%</div>
-      <div class="label">درصد استفاده</div>
+      <h2>کل شبکه - دانلود</h2>
+      <div class="value pulse" id="net_down">0.0000 MB/s</div>
+      <div class="label">دانلود فعلی</div>
+      <div class="net-values" id="net_total_down">0.00 MB</div>
+      <div class="label">کل دانلود</div>
     </div>
     <div class="card">
-      <h2>مصرف شبکه کل</h2>
-      <div class="value net-values" id="netUp">↑ 0 MB/s</div>
-      <div class="value net-values" id="netDown">↓ 0 MB/s</div>
-      <div class="label">آپلود / دانلود</div>
+      <h2>تونل - آپلود</h2>
+      <div class="value pulse" id="tun_up">0.0000 MB/s</div>
+      <div class="label">آپلود فعلی</div>
+      <div class="net-values" id="tun_total_up">0.00 MB</div>
+      <div class="label">کل آپلود</div>
     </div>
     <div class="card">
-      <h2>مصرف تونل</h2>
-      <div class="value net-values" id="tunnelUp">↑ 0 MB/s</div>
-      <div class="value net-values" id="tunnelDown">↓ 0 MB/s</div>
-      <div class="label">آپلود / دانلود</div>
+      <h2>تونل - دانلود</h2>
+      <div class="value pulse" id="tun_down">0.0000 MB/s</div>
+      <div class="label">دانلود فعلی</div>
+      <div class="net-values" id="tun_total_down">0.00 MB</div>
+      <div class="label">کل دانلود</div>
     </div>
   </div>
-  <button id="showTunnelForm">تنظیم سورس ایران تونل</button>
-  <form id="tunnelForm" method="POST" action="/set_tunnel">
-    <label for="ip">آدرس IP ایران تونل</label>
-    <input type="text" id="ip" name="ip" placeholder="مثال: 5.123.45.67" required pattern="^(\d{1,3}\.){3}\d{1,3}$" />
-    <label for="port">پورت تونل</label>
-    <input type="text" id="port" name="port" placeholder="مثال: 12345" required pattern="^\d{1,5}$" />
-    <button type="submit">تنظیم تونل</button>
+
+  <button onclick="showTunnelForm()" style="margin:24px auto; display:block; padding:12px 24px; border:none; border-radius:10px; background:#7c3aed; color:#fff; font-weight:700; font-size:16px; cursor:pointer;">تنظیم IP و پورت تونل</button>
+
+  <form id="tunnelForm" onsubmit="event.preventDefault(); setTunnel();">
+    <label for="tunnel_ip">IP تونل</label>
+    <input type="text" id="tunnel_ip" name="tunnel_ip" placeholder="مثلاً 192.168.1.100" required />
+    <label for="tunnel_port">پورت تونل</label>
+    <input type="text" id="tunnel_port" name="tunnel_port" placeholder="مثلاً 8080" required />
+    <button type="submit">ذخیره</button>
   </form>
+
 </main>
-<footer>
-  &copy; ۲۰۲۵ پنل مانیتورینگ لورنا
-</footer>
-<script>
-  const showBtn = document.getElementById('showTunnelForm');
-  const tunnelForm = document.getElementById('tunnelForm');
-
-  showBtn.addEventListener('click', () => {
-    tunnelForm.style.display = tunnelForm.style.display === 'none' || tunnelForm.style.display === '' ? 'block' : 'none';
-  });
-
-  async function fetchData() {
-    try {
-      const response = await fetch('/status');
-      if (!response.ok) throw new Error('Network response was not ok');
-      const data = await response.json();
-
-      document.getElementById('cpuUsage').textContent = data.cpu + '%';
-      document.getElementById('ramUsage').textContent = data.ram + '%';
-      document.getElementById('netUp').textContent = '↑ ' + data.net_up + ' MB/s';
-      document.getElementById('netDown').textContent = '↓ ' + data.net_down + ' MB/s';
-      document.getElementById('tunnelUp').textContent = '↑ ' + data.tunnel_up + ' MB/s';
-      document.getElementById('tunnelDown').textContent = '↓ ' + data.tunnel_down + ' MB/s';
-    } catch (e) {
-      console.error('Fetch error:', e);
-    }
-  }
-
-  setInterval(fetchData, 1500);
-  fetchData();
-</script>
+<footer>© 2025 لورنا - تمام حقوق محفوظ است.</footer>
 </body>
 </html>
 '''
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
+    if 'logged_in' in session and session['logged_in']:
+        return redirect('/dashboard')
+
     error = None
     if request.method == 'POST':
         username = request.form.get('username', '')
         password = request.form.get('password', '')
         license_key = request.form.get('license', '')
-        if username == USERNAME and password == PASSWORD and verify_license(license_key):
-            session['logged_in'] = True
-            return redirect(url_for('dashboard'))
+        if username == USERNAME and password == PASSWORD:
+            if verify_license(license_key):
+                session['logged_in'] = True
+                return redirect('/dashboard')
+            else:
+                error = "کد لایسنس اشتباه است."
         else:
-            error = 'نام کاربری، رمز عبور یا لایسنس اشتباه است.'
+            error = "نام کاربری یا رمز عبور اشتباه است."
+
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
     if not session.get('logged_in'):
-        return redirect(url_for('login'))
+        return redirect('/')
     return render_template_string(dashboard_page)
 
-@app.route('/status')
-def status():
-    if not session.get('logged_in'):
-        return jsonify({'error': 'unauthorized'}), 401
-    cpu = psutil.cpu_percent()
-    ram = psutil.virtual_memory().percent
-    net_up, net_down = update_network_usage()
-    tunnel_up, tunnel_down = update_tunnel_usage()
-    return jsonify({
-        'cpu': cpu,
-        'ram': ram,
-        'net_up': net_up,
-        'net_down': net_down,
-        'tunnel_up': tunnel_up,
-        'tunnel_down': tunnel_down
-    })
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect('/')
 
 @app.route('/set_tunnel', methods=['POST'])
 def set_tunnel():
     if not session.get('logged_in'):
-        return redirect(url_for('login'))
-    ip = request.form.get('ip', '').strip()
-    port = request.form.get('port', '').strip()
-    # ساده بررسی الگو (IPv4 و پورت)
-    import re
-    ip_pattern = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
-    port_pattern = re.compile(r'^\d{1,5}$')
-    if not ip_pattern.match(ip):
-        return "IP نامعتبر است", 400
-    if not port_pattern.match(port):
-        return "پورت نامعتبر است", 400
+        return jsonify({"success": False, "message": "لطفا وارد شوید."})
+    data = request.get_json()
+    ip = data.get('ip', '').strip()
+    port = data.get('port', '').strip()
+
+    # اعتبارسنجی ساده
+    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
+    port_pattern = r'^\d{1,5}$'
+    if not re.match(ip_pattern, ip):
+        return jsonify({"success": False, "message": "IP نامعتبر است."})
+    if not re.match(port_pattern, port) or int(port) > 65535:
+        return jsonify({"success": False, "message": "پورت نامعتبر است."})
+
     tunnel_info['ip'] = ip
     tunnel_info['port'] = port
-    # ریست مقادیر قبلی برای محاسبه سرعت درست
+    # ریست آمار تونل
     with tunnel_lock:
         prev_tunnel['bytes_sent'] = None
         prev_tunnel['bytes_recv'] = None
         prev_tunnel['time'] = None
-    return redirect(url_for('dashboard'))
+        total_tunnel['bytes_sent'] = 0
+        total_tunnel['bytes_recv'] = 0
 
-@app.route('/logout', methods=['POST'])
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
+    return jsonify({"success": True, "message": "تنظیمات تونل ذخیره شد."})
+
+@app.route('/stats')
+def stats():
+    if not session.get('logged_in'):
+        return jsonify({"error": "لطفا وارد شوید."}), 401
+
+    up_net, down_net = update_network_usage()
+    up_tun, down_tun = update_tunnel_usage()
+
+    return jsonify({
+        "network": {
+            "upload": up_net,
+            "download": down_net,
+            "total_upload": total_net['bytes_sent'] / (1024*1024),
+            "total_download": total_net['bytes_recv'] / (1024*1024),
+        },
+        "tunnel": {
+            "upload": up_tun,
+            "download": down_tun,
+            "total_upload": total_tunnel['bytes_sent'] / (1024*1024),
+            "total_download": total_tunnel['bytes_recv'] / (1024*1024),
+        }
+    })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=APP_PORT)
 PYEOF
 
-  echo "[*] ایجاد فایل سرویس systemd..."
-  cat > /etc/systemd/system/lorna_monitor.service <<'SEOF'
+  echo "[*] ساخت سرویس systemd برای اجرای برنامه..."
+  cat > /etc/systemd/system/lorna_monitor.service <<EOF
 [Unit]
 Description=Lorna Network Monitor
 After=network.target
 
 [Service]
 User=root
-WorkingDirectory=/opt/network_monitor
-ExecStart=/opt/network_monitor/venv/bin/python /opt/network_monitor/app.py
+WorkingDirectory=$APP_DIR
+ExecStart=$VENV_DIR/bin/python $APP_DIR/app.py
 Restart=always
-RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-SEOF
+EOF
 
-  echo "[*] فعال سازی سرویس..."
+  echo "[*] فعال‌سازی و اجرای سرویس..."
   systemctl daemon-reload
   systemctl enable lorna_monitor.service
-  systemctl restart lorna_monitor.service
+  systemctl start lorna_monitor.service
 
-  echo "[+] نصب با موفقیت انجام شد. به آدرس http://سرور_شما:5000 مراجعه کنید."
+  echo "نصب با موفقیت انجام شد!"
+  echo "برای ورود به پنل به آدرس http://$(hostname -I | awk '{print $1}'):$APP_PORT بروید"
+  echo "نام کاربری: admin"
+  echo "رمز عبور: admin123"
+  echo "کد لایسنس: lorna"
 }
 
 function remove_panel() {
-  echo "[*] حذف سرویس و فایل‌ها..."
-  systemctl stop lorna_monitor.service
-  systemctl disable lorna_monitor.service
-  rm -f /etc/systemd/system/lorna_monitor.service
+  echo "[*] متوقف کردن سرویس..."
+  systemctl stop lorna_monitor.service || true
+  systemctl disable lorna_monitor.service || true
+
+  echo "[*] حذف فایل‌ها..."
   rm -rf "$APP_DIR"
+  rm -f /etc/systemd/system/lorna_monitor.service
+
   systemctl daemon-reload
-  echo "[+] پنل حذف شد."
+
+  echo "پنل حذف شد."
 }
 
 while true; do
   print_menu
-  read choice
+  read -r choice
   case $choice in
     1) install_panel ;;
     2) remove_panel ;;
-    3) exit 0 ;;
-    *) echo "گزینه نامعتبر است. لطفا دوباره تلاش کنید." ;;
+    3) echo "خروج از برنامه..." ; exit 0 ;;
+    *) echo "لطفا گزینه معتبر وارد کنید." ; sleep 2 ;;
   esac
-  read -p "برای ادامه کلیدی بزنید..."
 done
