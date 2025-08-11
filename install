@@ -11,56 +11,40 @@ if [ "$CHOICE" == "1" ]; then
     echo
     read -p "پورت پنل (مثلاً 19999): " PANEL_PORT
 
-    # به‌روزرسانی سیستم
     apt update && apt upgrade -y
-
-    # نصب پیش‌نیازها
     apt install -y curl apache2-utils
 
-    # حذف اگر قبلاً نصب بود
     systemctl stop netdata 2>/dev/null
     systemctl disable netdata 2>/dev/null
     apt remove --purge -y netdata
     rm -rf /etc/netdata
 
-    # نصب Netdata با دنبال کردن ریدایرکت curl
     bash <(curl -L -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
 
-    # صبر کن تا فایل کانفیگ ایجاد بشه
     sleep 5
 
-    # اگر فایل کانفیگ وجود نداره، خطا بده
     if [ ! -f /etc/netdata/netdata.conf ]; then
         echo "❌ فایل کانفیگ netdata پیدا نشد!"
         exit 1
     fi
 
-    # تغییر یا اضافه کردن بخش [web] در فایل کانفیگ
-    if grep -q "^\[web\]" /etc/netdata/netdata.conf; then
-        sed -i "/^\[web\]/,/^\[/ s/^bind port = .*/bind port = $PANEL_PORT/" /etc/netdata/netdata.conf
-        if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "bind port"; then
-            sed -i "/^\[web\]/a bind port = $PANEL_PORT" /etc/netdata/netdata.conf
-        fi
-        if ! sed -n "/^\[web\]/,/^\[/p" /etc/netdata/netdata.conf | grep -q "basic auth login file"; then
-            sed -i "/^\[web\]/a basic auth login file = /etc/netdata/htpasswd" /etc/netdata/netdata.conf
-        else
-            sed -i "/^\[web\]/,/^\[/ s|basic auth login file = .*|basic auth login file = /etc/netdata/htpasswd|" /etc/netdata/netdata.conf
-        fi
-    else
-        cat <<EOF >> /etc/netdata/netdata.conf
-
-[web]
-  bind port = $PANEL_PORT
-  basic auth login file = /etc/netdata/htpasswd
-EOF
+    # اضافه کردن یا پیدا کردن بخش [web]
+    if ! grep -q "^\[web\]" /etc/netdata/netdata.conf; then
+        echo -e "\n[web]" >> /etc/netdata/netdata.conf
     fi
 
-    # ایجاد فایل htpasswd برای احراز هویت Basic
+    # حذف خطوط قبلی bind port و basic auth login file در بخش [web]
+    sed -i '/^\[web\]/,/^\[/ { /^bind port =/d; /^basic auth login file =/d }' /etc/netdata/netdata.conf
+
+    # اضافه کردن تنظیمات جدید
+    sed -i '/^\[web\]/a bind port = '"$PANEL_PORT" /etc/netdata/netdata.conf
+    sed -i '/^\[web\]/a basic auth login file = /etc/netdata/htpasswd' /etc/netdata/netdata.conf
+
     htpasswd -cb /etc/netdata/htpasswd $PANEL_USER $PANEL_PASS
     chmod 640 /etc/netdata/htpasswd
     chown netdata:netdata /etc/netdata/htpasswd
 
-    # راه‌اندازی مجدد netdata
+    systemctl enable netdata
     systemctl restart netdata
 
     echo "✅ نصب کامل شد."
