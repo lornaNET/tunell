@@ -1,48 +1,56 @@
 #!/bin/bash
 set -e
 
-echo "=== نصب پنل مانیتورینگ لورنا (Ubuntu 22.04+) ==="
-echo "1) نصب و راه‌اندازی پنل"
-echo "2) حذف پنل"
-read -p "انتخاب (1 یا 2): " CHOICE
-
 APP_DIR="/opt/network_monitor"
 VENV_DIR="$APP_DIR/venv"
 APP_PORT=5000
 LICENSE_FILE="$APP_DIR/license.key"
-LICENSE_VALUE="lorna"   # لایسنس ثابت
+LICENSE_VALUE="lorna"
 
-if [ "$CHOICE" == "1" ]; then
-    echo "[*] نصب بسته‌های سیستمی..."
-    apt update
-    apt install -y python3 python3-venv python3-pip curl
+function print_menu() {
+  clear
+  echo "=============================="
+  echo " پنل مانیتورینگ لورنا - نصب "
+  echo "=============================="
+  echo "1) نصب پنل"
+  echo "2) حذف پنل"
+  echo "3) خروج"
+  echo "=============================="
+  echo -n "انتخاب خود را وارد کنید: "
+}
 
-    echo "[*] ایجاد پوشه برنامه..."
-    mkdir -p "$APP_DIR"
-    echo "$LICENSE_VALUE" > "$LICENSE_FILE"
-    chmod 600 "$LICENSE_FILE"
+function install_panel() {
+  echo "[*] آپدیت مخازن و نصب پیش‌نیازها..."
+  apt update
+  apt install -y python3 python3-venv python3-pip curl
 
-    echo "[*] ساخت محیط مجازی پایتون..."
-    python3 -m venv "$VENV_DIR"
-    source "$VENV_DIR/bin/activate"
+  echo "[*] ایجاد دایرکتوری برنامه..."
+  mkdir -p "$APP_DIR"
+  echo "$LICENSE_VALUE" > "$LICENSE_FILE"
+  chmod 600 "$LICENSE_FILE"
 
-    echo "[*] نصب پکیج‌های پایتونی..."
-    pip install --upgrade pip >/dev/null
-    pip install flask psutil >/dev/null
+  echo "[*] ساخت محیط مجازی پایتون..."
+  python3 -m venv "$VENV_DIR"
+  source "$VENV_DIR/bin/activate"
 
-    echo "[*] ایجاد فایل برنامه Flask..."
-    cat > "$APP_DIR/app.py" <<'PYEOF'
+  echo "[*] نصب پکیج‌های موردنیاز..."
+  pip install --upgrade pip >/dev/null
+  pip install flask psutil >/dev/null
+
+  echo "[*] ایجاد فایل برنامه Flask..."
+  cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
 import psutil, os, time, threading
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_lorna_change_me'  # در production این را امن کن
+app.secret_key = 'super_secret_key_lorna_change_me'
 
 USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
 prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
+total_net = {'bytes_sent': 0, 'bytes_recv': 0}
 net_lock = threading.Lock()
 
 def verify_license(license_key):
@@ -56,7 +64,7 @@ def verify_license(license_key):
     except Exception:
         return False
 
-def get_network_speed_mbps():
+def update_network_usage():
     with net_lock:
         counters = psutil.net_io_counters()
         cur_sent = counters.bytes_sent
@@ -76,72 +84,94 @@ def get_network_speed_mbps():
         delta_sent = cur_sent - prev_net['bytes_sent']
         delta_recv = cur_recv - prev_net['bytes_recv']
 
+        # جمع کل (افزایشی)
+        total_net['bytes_sent'] += max(delta_sent, 0)
+        total_net['bytes_recv'] += max(delta_recv, 0)
+
         prev_net['bytes_sent'] = cur_sent
         prev_net['bytes_recv'] = cur_recv
         prev_net['time'] = now
 
-        up_mbps = (delta_sent * 8) / (dt * 1_000_000)
-        down_mbps = (delta_recv * 8) / (dt * 1_000_000)
+        up_MBps = delta_sent / (1024*1024) / dt
+        down_MBps = delta_recv / (1024*1024) / dt
 
-        return round(up_mbps, 3), round(down_mbps, 3)
+        return round(up_MBps, 4), round(down_MBps, 4)
 
 login_page = '''
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>لورنا — ورود</title>
-<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{
-  --bg: linear-gradient(135deg,#071026,#0b2b44);
-  --card:#07162b;
-  --text:#eaf6ff;
-  --accent:#06b6d4;
+body {
+  font-family: Tahoma, sans-serif;
+  background: linear-gradient(135deg,#071026,#0b2b44);
+  color: #eaf6ff;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  margin: 0;
 }
-*{box-sizing:border-box;font-family:'Vazirmatn',sans-serif}
-body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);display:flex;align-items:center;justify-content:center;padding:20px}
-.container{width:100%;max-width:1100px;display:grid;grid-template-columns:1fr 420px;gap:28px}
-.panel{background:rgba(255,255,255,0.03);padding:28px;border-radius:14px;backdrop-filter:blur(6px)}
-.brand{display:flex;gap:12px;align-items:center}
-.logo{width:72px;height:72px;border-radius:14px;background:linear-gradient(90deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:white;font-size:28px}
-h1{margin:6px 0}
-.features{margin-top:16px;line-height:1.8;color:rgba(234,246,255,0.85)}
-.card{background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));padding:22px;border-radius:12px}
-.field{margin-bottom:12px}
-input[type=text],input[type=password]{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
-button{width:100%;padding:12px;border-radius:10px;border:0;background:linear-gradient(90deg,var(--accent),#7c3aed);color:#051426;font-weight:700;cursor:pointer}
-.small{font-size:13px;color:rgba(234,246,255,0.7);margin-top:10px;text-align:center}
-.error{background:#ffefef;color:#8b0000;padding:8px;border-radius:8px;margin-bottom:10px}
-@media (max-width:960px){.container{grid-template-columns:1fr;}}
+.container {
+  background: rgba(255,255,255,0.05);
+  padding: 24px 30px;
+  border-radius: 16px;
+  box-shadow: 0 0 12px rgba(0,0,0,0.7);
+  max-width: 400px;
+  width: 100%;
+  text-align: center;
+}
+h1 {
+  margin-bottom: 20px;
+  font-weight: 600;
+}
+input[type=text], input[type=password] {
+  width: 100%;
+  padding: 10px 12px;
+  margin: 10px 0 16px 0;
+  border-radius: 8px;
+  border: none;
+  font-size: 16px;
+}
+button {
+  width: 100%;
+  padding: 12px 0;
+  background: #06b6d4;
+  border: none;
+  border-radius: 10px;
+  font-weight: 700;
+  color: #051426;
+  cursor: pointer;
+  font-size: 18px;
+}
+.error {
+  background: #ffefef;
+  color: #8b0000;
+  padding: 10px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.small {
+  margin-top: 12px;
+  color: rgba(234,246,255,0.7);
+  font-size: 14px;
+}
 </style>
 </head>
 <body>
 <div class="container">
-  <div class="panel">
-    <div class="brand"><div class="logo">L</div><div><h1>لورنا — پنل مانیتورینگ</h1><div class="small">نظارت لحظه‌ای سیستم و شبکه</div></div></div>
-    <div class="features">
-      <ul>
-        <li>گراف‌های دایره‌ای زیبا برای CPU و RAM</li>
-        <li>نمایش سرعت شبکه (آپلود/دانلود) بر حسب Mbps</li>
-        <li>تم روشن / تیره / AMOLED — ذخیره در مرورگر</li>
-        <li>لایسنس ساده: <strong>lorna</strong></li>
-      </ul>
-    </div>
-  </div>
-
-  <div class="card">
-    <h3>ورود به پنل</h3>
-    {% if error %}<div class="error">{{ error }}</div>{% endif %}
-    <form method="POST">
-      <div class="field"><input type="text" name="username" placeholder="نام کاربری" required></div>
-      <div class="field"><input type="password" name="password" placeholder="رمز عبور" required></div>
-      <div class="field"><input type="text" name="license" placeholder="کد لایسنس (lorna)" required></div>
-      <button type="submit">ورود</button>
-    </form>
-    <div class="small">نام کاربری/رمز پیش‌فرض: <strong>admin / admin123</strong></div>
-  </div>
+  <h1>ورود به پنل لورنا</h1>
+  {% if error %}<div class="error">{{ error }}</div>{% endif %}
+  <form method="POST">
+    <input type="text" name="username" placeholder="نام کاربری" required />
+    <input type="password" name="password" placeholder="رمز عبور" required />
+    <input type="text" name="license" placeholder="کد لایسنس (lorna)" required />
+    <button type="submit">ورود</button>
+  </form>
+  <div class="small">نام کاربری/رمز پیش‌فرض: <b>admin / admin123</b></div>
 </div>
 </body>
 </html>
@@ -151,142 +181,209 @@ dashboard_page = '''
 <!doctype html>
 <html lang="fa" dir="rtl">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>لورنا — داشبورد</title>
-<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;600;700&display=swap" rel="stylesheet">
 <style>
-:root{
-  --bg-color:#04102a;
-  --card-bg: rgba(255,255,255,0.03);
-  --text:#eaf6ff;
-  --muted:rgba(234,246,255,0.7);
-  --accent:#06b6d4;
+body {
+  font-family: Tahoma, sans-serif;
+  margin: 0;
+  background: linear-gradient(180deg,#04102a,#071b3b);
+  color: #eaf6ff;
+  min-height: 100vh;
+  direction: rtl;
 }
-body{margin:0;font-family:'Vazirmatn',sans-serif;background:linear-gradient(180deg,var(--bg-color),#071b3b);color:var(--text);min-height:100vh}
-.header{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;background:var(--card-bg);backdrop-filter:blur(6px)}
-.brand{display:flex;align-items:center;gap:12px}
-.brand .logo{width:44px;height:44;border-radius:10px;background:linear-gradient(90deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700}
-.controls{display:flex;gap:8px}
-button{cursor:pointer;border:none;background:none;color:var(--text);font-weight:600;font-size:14px;padding:6px 14px;border-radius:8px;transition:0.3s ease}
-button:hover{background:var(--accent);color:#051426}
-main{max-width:1200px;margin:22px auto;padding:0 14px}
-.card{background:var(--card-bg);border-radius:12px;padding:20px;margin-bottom:22px;backdrop-filter:blur(6px)}
-h2{margin:0 0 14px 0}
-#charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px}
-#charts > div{background:#0a1a3b;padding:12px;border-radius:12px;text-align:center;color:#ccc}
-#theme-toggle{margin-left:10px}
-@media (max-width:600px) {
-  #charts{grid-template-columns:1fr}
+header {
+  background: rgba(255,255,255,0.05);
+  backdrop-filter: blur(8px);
+  padding: 14px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+h1 {
+  margin: 0;
+}
+button {
+  background: none;
+  border: none;
+  color: #06b6d4;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 16px;
+  border-radius: 8px;
+  padding: 6px 14px;
+  transition: background-color 0.3s ease;
+}
+button:hover {
+  background: #06b6d4;
+  color: #051426;
+}
+main {
+  max-width: 1200px;
+  margin: 22px auto;
+  padding: 0 18px;
+}
+.cards {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.card {
+  background: rgba(255,255,255,0.03);
+  border-radius: 14px;
+  padding: 18px 26px;
+  width: 280px;
+  box-sizing: border-box;
+  text-align: center;
+  box-shadow: 0 0 12px rgba(0,0,0,0.3);
+}
+h2 {
+  margin: 10px 0 16px 0;
+}
+.value {
+  font-size: 36px;
+  font-weight: 700;
+  margin-top: 6px;
+  color: #7c3aed;
+}
+.label {
+  margin-top: 8px;
+  font-size: 14px;
+  color: rgba(234,246,255,0.7);
+}
+.net-values {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 6px 0 0 0;
+  color: #06b6d4;
+}
+@media (max-width: 600px) {
+  .cards {
+    flex-direction: column;
+    align-items: center;
+  }
 }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
-</head>
-<body>
-<header class="header">
-  <div class="brand">
-    <div class="logo">L</div>
-    <h1>پنل مانیتورینگ لورنا</h1>
-  </div>
-  <div class="controls">
-    <button onclick="logout()">خروج</button>
-    <button id="theme-toggle">تم روشن</button>
-  </div>
-</header>
-<main>
-  <div id="charts">
-    <div>
-      <h2>استفاده CPU (%)</h2>
-      <div id="cpuChart"></div>
-    </div>
-    <div>
-      <h2>استفاده RAM (%)</h2>
-      <div id="ramChart"></div>
-    </div>
-    <div>
-      <h2>سرعت شبکه (Mbps)</h2>
-      <div>آپلود: <span id="upSpeed">0</span></div>
-      <div>دانلود: <span id="downSpeed">0</span></div>
-    </div>
-  </div>
-</main>
 <script>
-let darkTheme = true;
-const toggleBtn = document.getElementById('theme-toggle');
-const body = document.body;
-
-function setTheme(dark){
-  if(dark){
-    body.style.background = "linear-gradient(180deg,#04102a,#071b3b)";
-    toggleBtn.textContent = "تم روشن";
-  } else {
-    body.style.background = "linear-gradient(180deg,#e0e7ff,#bfdbfe)";
-    toggleBtn.textContent = "تم تاریک";
-  }
-  darkTheme = dark;
-  localStorage.setItem('lorna_theme', dark ? 'dark' : 'light');
-}
-
-toggleBtn.addEventListener('click', ()=>{
-  setTheme(!darkTheme);
-});
-
-window.onload = () => {
-  let savedTheme = localStorage.getItem('lorna_theme');
-  if(savedTheme === 'light'){
-    setTheme(false);
-  } else {
-    setTheme(true);
-  }
-};
-
-function logout(){
-  fetch('/logout',{method:'POST'}).then(() => {
+function logout() {
+  fetch('/logout', {method:'POST'}).then(() => {
     window.location.href = '/login';
   });
 }
 
-var cpuChart = new ApexCharts(document.querySelector("#cpuChart"), {
-  chart: { type: 'radialBar', height: 180 },
-  series: [0],
-  labels: ['CPU'],
-  colors: ['#06b6d4'],
-  plotOptions: {
-    radialBar: {
-      hollow: { size: '55%' },
-      dataLabels: { name: { fontSize: '16px' }, value: { fontSize: '28px' } }
-    }
-  }
-});
-cpuChart.render();
+let cpuChart, ramChart;
 
-var ramChart = new ApexCharts(document.querySelector("#ramChart"), {
-  chart: { type: 'radialBar', height: 180 },
-  series: [0],
-  labels: ['RAM'],
-  colors: ['#7c3aed'],
-  plotOptions: {
-    radialBar: {
-      hollow: { size: '55%' },
-      dataLabels: { name: { fontSize: '16px' }, value: { fontSize: '28px' } }
+function drawRadialBar(id, label, color) {
+  const ctx = document.getElementById(id).getContext('2d');
+  return new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: [label],
+      datasets: [{
+        data: [0, 100],
+        backgroundColor: [color, '#2c3e50'],
+        borderWidth: 0
+      }]
+    },
+    options: {
+      cutout: '70%',
+      rotation: -90,
+      circumference: 180,
+      plugins: {
+        tooltip: {enabled: false},
+        legend: {display: false}
+      }
     }
-  }
-});
-ramChart.render();
-
-function fetchData(){
-  fetch('/api/status').then(res => res.json()).then(data => {
-    cpuChart.updateSeries([data.cpu_percent]);
-    ramChart.updateSeries([data.ram_percent]);
-    document.getElementById('upSpeed').textContent = data.net_upload_mbps;
-    document.getElementById('downSpeed').textContent = data.net_download_mbps;
   });
 }
 
-setInterval(fetchData, 2000);
-fetchData();
+async function fetchData() {
+  const res = await fetch('/api/status');
+  if (!res.ok) return;
+  const data = await res.json();
+  document.getElementById('cpuValue').textContent = data.cpu_percent + " %";
+  document.getElementById('ramValue').textContent = data.ram_percent + " %";
+  document.getElementById('uploadSpeed').textContent = data.net_upload_MBps + " MB/s";
+  document.getElementById('downloadSpeed').textContent = data.net_download_MBps + " MB/s";
+  document.getElementById('totalUpload').textContent = data.total_upload_MB.toFixed(2) + " MB";
+  document.getElementById('totalDownload').textContent = data.total_download_MB.toFixed(2) + " MB";
 
+  // به روزرسانی چارت
+  cpuChart.data.datasets[0].data[0] = data.cpu_percent;
+  cpuChart.data.datasets[0].data[1] = 100 - data.cpu_percent;
+  cpuChart.update();
+
+  ramChart.data.datasets[0].data[0] = data.ram_percent;
+  ramChart.data.datasets[0].data[1] = 100 - data.ram_percent;
+  ramChart.update();
+}
+
+window.onload = () => {
+  const ctxCpu = document.getElementById('cpuChart').getContext('2d');
+  const ctxRam = document.getElementById('ramChart').getContext('2d');
+
+  cpuChart = new Chart(ctxCpu, {
+    type: 'doughnut',
+    data: {
+      labels: ['CPU'],
+      datasets: [{data: [0,100], backgroundColor: ['#06b6d4','#2c3e50'], borderWidth: 0}]
+    },
+    options: {
+      cutout: '70%',
+      rotation: -90,
+      circumference: 180,
+      plugins: {tooltip:false, legend:false}
+    }
+  });
+
+  ramChart = new Chart(ctxRam, {
+    type: 'doughnut',
+    data: {
+      labels: ['RAM'],
+      datasets: [{data: [0,100], backgroundColor: ['#7c3aed','#2c3e50'], borderWidth: 0}]
+    },
+    options: {
+      cutout: '70%',
+      rotation: -90,
+      circumference: 180,
+      plugins: {tooltip:false, legend:false}
+    }
+  });
+
+  fetchData();
+  setInterval(fetchData, 2000);
+}
 </script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<header>
+  <h1>پنل مانیتورینگ لورنا</h1>
+  <button onclick="logout()">خروج</button>
+</header>
+<main>
+  <div class="cards">
+    <div class="card">
+      <h2>CPU</h2>
+      <canvas id="cpuChart" width="140" height="80"></canvas>
+      <div class="value" id="cpuValue">0 %</div>
+    </div>
+    <div class="card">
+      <h2>RAM</h2>
+      <canvas id="ramChart" width="140" height="80"></canvas>
+      <div class="value" id="ramValue">0 %</div>
+    </div>
+    <div class="card">
+      <h2>سرعت شبکه</h2>
+      <div class="net-values">آپلود: <span id="uploadSpeed">0 MB/s</span></div>
+      <div class="net-values">دانلود: <span id="downloadSpeed">0 MB/s</span></div>
+      <div class="net-values label" style="margin-top:12px;">مجموع آپلود: <span id="totalUpload">0 MB</span></div>
+      <div class="net-values label">مجموع دانلود: <span id="totalDownload">0 MB</span></div>
+    </div>
+  </div>
+</main>
 </body>
 </html>
 '''
@@ -295,9 +392,9 @@ fetchData();
 def login():
     error = None
     if request.method == 'POST':
-        username = request.form.get('username', '')
-        password = request.form.get('password', '')
-        license_key = request.form.get('license', '')
+        username = request.form.get('username','')
+        password = request.form.get('password','')
+        license_key = request.form.get('license','')
         if username == USERNAME and password == PASSWORD and verify_license(license_key):
             session['logged_in'] = True
             return redirect(url_for('dashboard'))
@@ -326,24 +423,31 @@ def dashboard():
 def api_status():
     if not session.get('logged_in'):
         return jsonify({'error':'unauthorized'}), 401
+
     cpu = psutil.cpu_percent(interval=0.5)
     ram = psutil.virtual_memory().percent
-    up_mbps, down_mbps = get_network_speed_mbps()
+    up_MBps, down_MBps = update_network_usage()
+    with net_lock:
+        total_up_MB = total_net['bytes_sent'] / (1024*1024)
+        total_down_MB = total_net['bytes_recv'] / (1024*1024)
+
     return jsonify({
         'cpu_percent': cpu,
         'ram_percent': ram,
-        'net_upload_mbps': up_mbps,
-        'net_download_mbps': down_mbps
+        'net_upload_MBps': up_MBps,
+        'net_download_MBps': down_MBps,
+        'total_upload_MB': total_up_MB,
+        'total_download_MB': total_down_MB
     })
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 PYEOF
 
-    deactivate
+  deactivate
 
-    echo "[*] ایجاد فایل سرویس systemd..."
-    cat > /etc/systemd/system/lorna.service <<'SERVICE_EOF'
+  echo "[*] ایجاد فایل سرویس systemd..."
+  cat > /etc/systemd/system/lorna.service <<'SERVICE_EOF'
 [Unit]
 Description=Lorna Network Monitor Service
 After=network.target
@@ -359,26 +463,33 @@ Restart=on-failure
 WantedBy=multi-user.target
 SERVICE_EOF
 
-    echo "[*] فعالسازی سرویس..."
-    systemctl daemon-reload
-    systemctl enable lorna.service
-    systemctl start lorna.service
+  echo "[*] فعالسازی و شروع سرویس..."
+  systemctl daemon-reload
+  systemctl enable lorna.service
+  systemctl start lorna.service
 
-    echo "نصب و راه‌اندازی پنل با موفقیت انجام شد."
-    echo "به مرورگر بروید و http://<آدرس_IP_سرور>:$APP_PORT را باز کنید."
-    exit 0
-fi
+  echo "نصب و راه‌اندازی پنل با موفقیت انجام شد."
+  echo "به مرورگر بروید و http://<آدرس_IP_سرور>:$APP_PORT را باز کنید."
+}
 
-if [ "$CHOICE" == "2" ]; then
-    echo "[*] حذف پنل..."
-    systemctl stop lorna.service 2>/dev/null || true
-    systemctl disable lorna.service 2>/dev/null || true
-    rm -rf "$APP_DIR"
-    rm -f /etc/systemd/system/lorna.service
-    systemctl daemon-reload
-    echo "پنل و سرویس حذف شدند."
-    exit 0
-fi
+function remove_panel() {
+  echo "[*] توقف سرویس..."
+  systemctl stop lorna.service || true
+  systemctl disable lorna.service || true
+  echo "[*] حذف فایل‌ها..."
+  rm -rf "$APP_DIR"
+  rm -f /etc/systemd/system/lorna.service
+  systemctl daemon-reload
+  echo "پنل و سرویس حذف شدند."
+}
 
-echo "انتخاب نامعتبر است."
-exit 1
+while true; do
+  print_menu
+  read CHOICE
+  case $CHOICE in
+    1) install_panel; break ;;
+    2) remove_panel; break ;;
+    3) echo "خروج..."; exit 0 ;;
+    *) echo "انتخاب نامعتبر است!"; sleep 1 ;;
+  esac
+done
