@@ -16,7 +16,7 @@ if [ "$CHOICE" == "1" ]; then
     apt update && apt upgrade -y
 
     # نصب ابزارهای مورد نیاز
-    apt install -y vnstat apache2 php php-cli unzip wget apache2-utils
+    apt install -y vnstat apache2 php php-cli unzip wget apache2-utils libapache2-mod-php
 
     # فعال‌سازی vnStat
     systemctl enable vnstat
@@ -26,27 +26,26 @@ if [ "$CHOICE" == "1" ]; then
     rm -f /var/www/html/index.html
 
     # دانلود رابط وب vnStat (vnstat-php)
-    cd /var/www/html
-    wget https://github.com/bjd/vnstat-php-frontend/archive/master.zip
-    unzip master.zip
-    mv vnstat-php-frontend-master/* .
-    rm -rf vnstat-php-frontend-master master.zip
+    cd /var/www/html || exit
+    wget -O vnstat.zip https://github.com/bjd/vnstat-php-frontend/archive/master.zip
+    unzip vnstat.zip
+    cp -r vnstat-php-frontend-master/* .
+    rm -rf vnstat-php-frontend-master vnstat.zip
 
-    # اطمینان از وجود فایل index.php
-    if [ ! -f /var/www/html/index.php ]; then
-        echo "<?php phpinfo(); ?>" > /var/www/html/index.php
-    fi
+    # تنظیمات پیش‌فرض پنل (نمایش همه اینترفیس‌ها)
+    sed -i "s/^\$iface_list.*/\$iface_list = array();/" config.php
 
     # ایجاد یوزر و پسورد پنل
-    htpasswd -cb /etc/apache2/.htpasswd $PANEL_USER $PANEL_PASS
+    htpasswd -cb /etc/apache2/.htpasswd "$PANEL_USER" "$PANEL_PASS"
 
     # تنظیم پورت سفارشی
-    sed -i "s/Listen 80/Listen $PANEL_PORT/g" /etc/apache2/ports.conf
-    sed -i "s/:80/:$PANEL_PORT/g" /etc/apache2/sites-available/000-default.conf
+    sed -i "s/^Listen .*/Listen $PANEL_PORT/" /etc/apache2/ports.conf
+    sed -i "s/:80/:$PANEL_PORT/" /etc/apache2/sites-available/000-default.conf
 
     # فعال‌سازی احراز هویت
     cat <<EOF >/etc/apache2/conf-available/auth.conf
 <Directory "/var/www/html">
+    DirectoryIndex index.php
     AuthType Basic
     AuthName "Login Required"
     AuthUserFile /etc/apache2/.htpasswd
@@ -55,7 +54,8 @@ if [ "$CHOICE" == "1" ]; then
 EOF
     a2enconf auth
 
-    # راه‌اندازی مجدد Apache
+    # فعال کردن PHP در Apache
+    a2enmod php*
     systemctl restart apache2
 
     echo "✅ نصب کامل شد."
@@ -66,7 +66,7 @@ elif [ "$CHOICE" == "2" ]; then
     # ================= حذف =================
     echo "⚠ در حال حذف کامل پنل و پکیج‌های نصب شده..."
     systemctl stop apache2 vnstat
-    apt remove --purge -y vnstat apache2 php php-cli unzip wget apache2-utils
+    apt remove --purge -y vnstat apache2 php php-cli unzip wget apache2-utils libapache2-mod-php
     apt autoremove -y
     rm -rf /var/www/html/*
     rm -f /etc/apache2/.htpasswd
