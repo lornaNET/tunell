@@ -42,7 +42,6 @@ USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
-# متغیرهای برای محاسبه سرعت شبکه (thread-safe)
 prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 net_lock = threading.Lock()
 
@@ -53,16 +52,11 @@ def verify_license(license_key):
                 stored = f.read().strip()
             return license_key.strip() == stored
         else:
-            # اگر فایل نبود، فقط اجازه بده اگر کلید برابر "lorna" باشه
             return license_key.strip() == "lorna"
     except Exception:
         return False
 
 def get_network_speed_mbps():
-    """
-    بازگرداندن سرعت آپلود و دانلود به مگابیت بر ثانیه (Mbps)
-    با استفاده از delta روی net_io_counters
-    """
     with net_lock:
         counters = psutil.net_io_counters()
         cur_sent = counters.bytes_sent
@@ -86,14 +80,11 @@ def get_network_speed_mbps():
         prev_net['bytes_recv'] = cur_recv
         prev_net['time'] = now
 
-        # bytes/sec -> bits/sec -> Mbps
         up_mbps = (delta_sent * 8) / (dt * 1_000_000)
         down_mbps = (delta_recv * 8) / (dt * 1_000_000)
 
-        # مقداردهی اعشار مناسب
         return round(up_mbps, 3), round(down_mbps, 3)
 
-# صفحه ورود (گرافیکی)
 login_page = '''
 <!doctype html>
 <html lang="fa" dir="rtl">
@@ -156,7 +147,6 @@ button{width:100%;padding:12px;border-radius:10px;border:0;background:linear-gra
 </html>
 '''
 
-# داشبورد با ApexCharts (گیج‌های دایره‌ای) و تم‌ها + تنظیم Link Max
 dashboard_page = '''
 <!doctype html>
 <html lang="fa" dir="rtl">
@@ -177,307 +167,218 @@ body{margin:0;font-family:'Vazirmatn',sans-serif;background:linear-gradient(180d
 .header{display:flex;justify-content:space-between;align-items:center;padding:14px 22px;background:var(--card-bg);backdrop-filter:blur(6px)}
 .brand{display:flex;align-items:center;gap:12px}
 .brand .logo{width:44px;height:44;border-radius:10px;background:linear-gradient(90deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700}
-.controls{display:flex;gap:10px;align-items:center}
-.container{padding:20px;display:grid;grid-template-columns:1fr 360px;gap:18px}
-.panel{background:var(--card-bg);padding:18px;border-radius:12px}
-.gauges{display:flex;flex-wrap:wrap;gap:14px;justify-content:center}
-.gauge-card{width:220px;text-align:center}
-.small{color:var(--muted);font-size:13px}
-.rightcol{display:flex;flex-direction:column;gap:14px}
-.input-inline{display:flex;gap:8px;align-items:center}
-.btn{padding:8px 12px;border-radius:8px;border:0;background:linear-gradient(90deg,var(--accent),#7c3aed);color:#041026;font-weight:700;cursor:pointer}
-.footer{padding:14px;text-align:center;color:var(--muted)}
-/* light theme */
-body.light{ --bg-color:#f7fafc; --card-bg: #ffffff; --text:#111827; --muted:rgba(17,24,39,0.6); --accent:#0ea5a4;}
-/* amoled */
-body.amoled{ --bg-color:#000000; --card-bg: rgba(255,255,255,0.02); --text:#00ffcc; --muted:rgba(0,255,204,0.5); --accent:#00ffd1;}
-@media (max-width:980px){ .container{grid-template-columns:1fr} .rightcol{order:2} }
+.controls{display:flex;gap:8px}
+button{cursor:pointer;border:none;background:none;color:var(--text);font-weight:600;font-size:14px;padding:6px 14px;border-radius:8px;transition:0.3s ease}
+button:hover{background:var(--accent);color:#051426}
+main{max-width:1200px;margin:22px auto;padding:0 14px}
+.card{background:var(--card-bg);border-radius:12px;padding:20px;margin-bottom:22px;backdrop-filter:blur(6px)}
+h2{margin:0 0 14px 0}
+#charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px}
+#charts > div{background:#0a1a3b;padding:12px;border-radius:12px;text-align:center;color:#ccc}
+#theme-toggle{margin-left:10px}
+@media (max-width:600px) {
+  #charts{grid-template-columns:1fr}
+}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
 </head>
 <body>
-<div class="header">
-  <div class="brand"><div class="logo">L</div><div><strong>لورنا</strong><div class="small">پنل مانیتورینگ</div></div></div>
+<header class="header">
+  <div class="brand">
+    <div class="logo">L</div>
+    <h1>پنل مانیتورینگ لورنا</h1>
+  </div>
   <div class="controls">
-    <div class="small">IP: <strong>{{ request.remote_addr }}</strong></div>
-    <a href="{{ url_for('logout') }}" class="btn" style="text-decoration:none">خروج</a>
+    <button onclick="logout()">خروج</button>
+    <button id="theme-toggle">تم روشن</button>
   </div>
-</div>
-
-<div class="container">
-  <div class="panel">
-    <h3>وضعیت سیستم</h3>
-    {% if not license_ok %}
-      <div style="padding:12px;border-radius:8px;background:rgba(255,0,0,0.05);margin-bottom:12px">
-        <strong>لایسنس ثبت نشده یا نامعتبر است.</strong>
-        <div class="small">برای نمایش گراف‌ها کد لایسنس را وارد کنید (lorna)</div>
-        {% if error %}<div style="color:#ffb4b4;margin-top:8px">{{ error }}</div>{% endif %}
-        <form method="POST" action="{{ url_for('set_license') }}" style="margin-top:8px;display:flex;gap:8px;align-items:center">
-          <input name="license" placeholder="lorna" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06)">
-          <button class="btn" type="submit">ثبت لایسنس</button>
-        </form>
-      </div>
-    {% else %}
-      <div class="gauges">
-        <div class="gauge-card panel">
-          <div id="cpuChart"></div>
-          <div class="small">CPU</div>
-          <div id="cpuText" class="small" style="margin-top:6px">-- %</div>
-        </div>
-
-        <div class="gauge-card panel">
-          <div id="ramChart"></div>
-          <div class="small">RAM</div>
-          <div id="ramText" class="small" style="margin-top:6px">-- %</div>
-        </div>
-
-        <div class="gauge-card panel">
-          <div id="upChart"></div>
-          <div class="small">آپلود (نسبت به لینک)</div>
-          <div id="upText" class="small" style="margin-top:6px">-- Mbps</div>
-        </div>
-
-        <div class="gauge-card panel">
-          <div id="downChart"></div>
-          <div class="small">دانلود (نسبت به لینک)</div>
-          <div id="downText" class="small" style="margin-top:6px">-- Mbps</div>
-        </div>
-      </div>
-
-      <div style="margin-top:14px" class="small">
-        نمودارها هر 2 ثانیه آپدیت می‌شوند. برای مقایسه آپلود/دانلود درصدی، پهنای باند لینک خود را (Mbps) وارد کنید.
-      </div>
-    {% endif %}
-  </div>
-
-  <div class="rightcol">
-    <div class="panel">
-      <h4>تنظیمات</h4>
-      <div class="small">تم: <select id="themeSel" onchange="setTheme(this.value)"><option value="dark">تیره</option><option value="light">روشن</option><option value="amoled">AMOLED</option></select></div>
-      <div style="height:10px"></div>
-      <div class="small">حداکثر لینک (Mbps):</div>
-      <div style="display:flex;gap:8px;margin-top:8px">
-        <input id="linkMax" type="number" min="1" value="100" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);width:140px">
-        <button class="btn" onclick="saveLinkMax()">ذخیره</button>
-      </div>
-      <div style="height:12px"></div>
-      <div class="panel">
-        <h4>دستورات</h4>
-        <div class="small">برای اجرای دستی:</div>
-        <pre style="background:transparent;color:var(--muted);padding:8px;border-radius:6px">source {{ venv }}/bin/activate && python {{ app_path }}/app.py</pre>
-      </div>
+</header>
+<main>
+  <div id="charts">
+    <div>
+      <h2>استفاده CPU (%)</h2>
+      <div id="cpuChart"></div>
     </div>
-
-    <div class="panel">
-      <h4>اطلاعات</h4>
-      <div class="small">وضعیت لایسنس: <strong>{{ 'معتبر' if license_ok else 'نامعتبر' }}</strong></div>
-      <div style="height:8px"></div>
-      <div class="small">نسخه: 1.0</div>
+    <div>
+      <h2>استفاده RAM (%)</h2>
+      <div id="ramChart"></div>
+    </div>
+    <div>
+      <h2>سرعت شبکه (Mbps)</h2>
+      <div>آپلود: <span id="upSpeed">0</span></div>
+      <div>دانلود: <span id="downSpeed">0</span></div>
     </div>
   </div>
-</div>
-
-<div class="footer">© lorna panel</div>
-
-<!-- ApexCharts -->
-<script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+</main>
 <script>
-/* helpers */
-function formatNum(v){
-  if(v>=1000) return (v/1000).toFixed(2)+' G';
-  if(v>=1) return v.toFixed(2);
-  if(v>0.001) return (v*1000).toFixed(2)+' m';
-  return v.toFixed(3);
-}
+let darkTheme = true;
+const toggleBtn = document.getElementById('theme-toggle');
+const body = document.body;
 
-/* theme */
-function setTheme(t){
-  if(t==='dark') document.body.className='';
-  else if(t==='light') document.body.className='light';
-  else if(t==='amoled') document.body.className='amoled';
-  localStorage.setItem('lorna_theme', t);
-  document.getElementById('themeSel').value = t;
-}
-function loadTheme(){
-  const t = localStorage.getItem('lorna_theme') || 'dark';
-  setTheme(t);
-}
-
-/* link max */
-function saveLinkMax(){
-  const v = parseFloat(document.getElementById('linkMax').value) || 100;
-  localStorage.setItem('lorna_link_max', v);
-  alert('ذخیره شد: ' + v + ' Mbps');
-}
-function getLinkMax(){
-  return parseFloat(localStorage.getItem('lorna_link_max')) || parseFloat(document.getElementById('linkMax').value) || 100;
-}
-
-/* ساخت گیج‌ها با ApexCharts (radialBar) */
-function createRadial(selector, label, unit){
-  const options = {
-    chart: { type: 'radialBar', height: 220 },
-    series: [0],
-    plotOptions: {
-      radialBar: {
-        startAngle: -135,
-        endAngle: 135,
-        hollow: { size: '60%' },
-        track: { background: 'rgba(255,255,255,0.06)' },
-        dataLabels: {
-          name: { show: true, fontSize: '14px', offsetY: -6 },
-          value: { show: true, fontSize: '20px', offsetY: 10, formatter: function(val){ return val + (unit||'') } }
-        }
-      }
-    },
-    labels: [label],
-    stroke: { lineCap: 'round' }
-  };
-  const chart = new ApexCharts(document.querySelector(selector), options);
-  chart.render();
-  return chart;
-}
-
-/* init */
-let cpuChart, ramChart, upChart, downChart;
-function initCharts(){
-  cpuChart = createRadial('#cpuChart', 'CPU', '%');
-  ramChart = createRadial('#ramChart', 'RAM', '%');
-  upChart  = createRadial('#upChart', 'آپلود', '%');
-  downChart= createRadial('#downChart', 'دانلود', '%');
-}
-
-/* آپدیت دوره‌ای */
-async function fetchAndUpdate(){
-  try{
-    const res = await fetch('/get_system_data');
-    const d = await res.json();
-    const cpu = Math.round(d.cpu*10)/10;
-    const ram = Math.round(d.ram*10)/10;
-    const up_mbps = d.net.upload_mbps || 0;
-    const down_mbps = d.net.download_mbps || 0;
-    // درصد نسبت به لینک
-    const linkMax = getLinkMax() || 100;
-    const up_pct = Math.min(100, Math.round((up_mbps / linkMax) * 1000)/10);
-    const down_pct = Math.min(100, Math.round((down_mbps / linkMax) * 1000)/10);
-
-    // update charts
-    if(cpuChart) cpuChart.updateSeries([cpu]);
-    if(ramChart) ramChart.updateSeries([ram]);
-    if(upChart) upChart.updateSeries([up_pct]);
-    if(downChart) downChart.updateSeries([down_pct]);
-
-    // numeric text
-    document.getElementById('cpuText').innerText = cpu + ' %';
-    document.getElementById('ramText').innerText = ram + ' %';
-    document.getElementById('upText').innerText = (up_mbps).toFixed(3) + ' Mbps (' + up_pct + '%)';
-    document.getElementById('downText').innerText = (down_mbps).toFixed(3) + ' Mbps (' + down_pct + '%)';
-  }catch(e){
-    // ignore transient errors
-    console.warn('fetch error', e);
+function setTheme(dark){
+  if(dark){
+    body.style.background = "linear-gradient(180deg,#04102a,#071b3b)";
+    toggleBtn.textContent = "تم روشن";
+  } else {
+    body.style.background = "linear-gradient(180deg,#e0e7ff,#bfdbfe)";
+    toggleBtn.textContent = "تم تاریک";
   }
+  darkTheme = dark;
+  localStorage.setItem('lorna_theme', dark ? 'dark' : 'light');
 }
 
-/* شروع */
-window.addEventListener('load', ()=>{
-  loadTheme();
-  // مقدار اولیه linkMax از localStorage
-  document.getElementById('linkMax').value = localStorage.getItem('lorna_link_max') || 100;
-  initCharts();
-  // اگر لایسنس معتبر است، شروع رفرش
-  if({{ 'true' if license_ok else 'false' }}){
-    fetchAndUpdate();
-    setInterval(fetchAndUpdate, 2000); // هر 2 ثانیه
+toggleBtn.addEventListener('click', ()=>{
+  setTheme(!darkTheme);
+});
+
+window.onload = () => {
+  let savedTheme = localStorage.getItem('lorna_theme');
+  if(savedTheme === 'light'){
+    setTheme(false);
+  } else {
+    setTheme(true);
+  }
+};
+
+function logout(){
+  fetch('/logout',{method:'POST'}).then(() => {
+    window.location.href = '/login';
+  });
+}
+
+var cpuChart = new ApexCharts(document.querySelector("#cpuChart"), {
+  chart: { type: 'radialBar', height: 180 },
+  series: [0],
+  labels: ['CPU'],
+  colors: ['#06b6d4'],
+  plotOptions: {
+    radialBar: {
+      hollow: { size: '55%' },
+      dataLabels: { name: { fontSize: '16px' }, value: { fontSize: '28px' } }
+    }
   }
 });
+cpuChart.render();
+
+var ramChart = new ApexCharts(document.querySelector("#ramChart"), {
+  chart: { type: 'radialBar', height: 180 },
+  series: [0],
+  labels: ['RAM'],
+  colors: ['#7c3aed'],
+  plotOptions: {
+    radialBar: {
+      hollow: { size: '55%' },
+      dataLabels: { name: { fontSize: '16px' }, value: { fontSize: '28px' } }
+    }
+  }
+});
+ramChart.render();
+
+function fetchData(){
+  fetch('/api/status').then(res => res.json()).then(data => {
+    cpuChart.updateSeries([data.cpu_percent]);
+    ramChart.updateSeries([data.ram_percent]);
+    document.getElementById('upSpeed').textContent = data.net_upload_mbps;
+    document.getElementById('downSpeed').textContent = data.net_download_mbps;
+  });
+}
+
+setInterval(fetchData, 2000);
+fetchData();
+
 </script>
 </body>
 </html>
 '''
 
-# مسیرهای Flask
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session:
-        return redirect(url_for('dashboard'))
     error = None
     if request.method == 'POST':
-        username = request.form.get('username','').strip()
-        password = request.form.get('password','').strip()
-        license_key = request.form.get('license','').strip()
-        if username == USERNAME and password == PASSWORD:
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        license_key = request.form.get('license', '')
+        if username == USERNAME and password == PASSWORD and verify_license(license_key):
             session['logged_in'] = True
-            session['license_ok'] = verify_license(license_key)
             return redirect(url_for('dashboard'))
         else:
-            error = 'نام کاربری یا رمز عبور اشتباه است'
+            error = "نام کاربری، رمز یا لایسنس اشتباه است."
     return render_template_string(login_page, error=error)
 
-@app.route('/dashboard', methods=['GET'])
-def dashboard():
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    ram_percent = psutil.virtual_memory().percent
-    up_mbps, down_mbps = get_network_speed_mbps()
-    return render_template_string(dashboard_page,
-                                  cpu=cpu_percent,
-                                  ram=ram_percent,
-                                  net={'upload_mbps': up_mbps, 'download_mbps': down_mbps},
-                                  license_ok=session.get('license_ok', False),
-                                  error=None,
-                                  request=request,
-                                  venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
-                                  app_path=os.path.dirname(__file__))
-
-@app.route('/set_license', methods=['POST'])
-def set_license():
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-    license_key = request.form.get('license','').strip()
-    if verify_license(license_key):
-        session['license_ok'] = True
-        return redirect(url_for('dashboard'))
-    else:
-        return render_template_string(dashboard_page,
-                                      cpu=psutil.cpu_percent(interval=0.1),
-                                      ram=psutil.virtual_memory().percent,
-                                      net={'upload_mbps': 0, 'download_mbps': 0},
-                                      license_ok=False,
-                                      error="کد لایسنس نامعتبر است",
-                                      request=request,
-                                      venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
-                                      app_path=os.path.dirname(__file__))
-
-@app.route('/get_system_data')
-def get_system_data():
-    # CPU و RAM و سرعت شبکه (بر حسب Mbps)
-    cpu = psutil.cpu_percent(interval=0.1)
-    ram = psutil.virtual_memory().percent
-    up, down = get_network_speed_mbps()
-    return jsonify({'cpu': cpu, 'ram': ram, 'net': {'upload_mbps': up, 'download_mbps': down}})
-
-@app.route('/logout')
+@app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
-    return redirect(url_for('login'))
+    return '', 204
+
+@app.route('/')
+def index():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    return redirect(url_for('dashboard'))
+
+@app.route('/dashboard')
+def dashboard():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    return render_template_string(dashboard_page)
+
+@app.route('/api/status')
+def api_status():
+    if not session.get('logged_in'):
+        return jsonify({'error':'unauthorized'}), 401
+    cpu = psutil.cpu_percent(interval=0.5)
+    ram = psutil.virtual_memory().percent
+    up_mbps, down_mbps = get_network_speed_mbps()
+    return jsonify({
+        'cpu_percent': cpu,
+        'ram_percent': ram,
+        'net_upload_mbps': up_mbps,
+        'net_download_mbps': down_mbps
+    })
 
 if __name__ == '__main__':
-    # for production بهتره از gunicorn / systemd استفاده کنید
     app.run(host='0.0.0.0', port=5000)
 PYEOF
 
-    echo "[+] نصب کامل شد."
-    echo "برای اجرای پنل:"
-    echo "  source $VENV_DIR/bin/activate"
-    echo "  python $APP_DIR/app.py"
-    echo "سپس با مرورگر به: http://<IP-Server>:$APP_PORT بروید."
-    echo "لایسنس پیش‌فرض: $LICENSE_VALUE"
+    deactivate
 
-elif [ "$CHOICE" == "2" ]; then
-    echo "[*] حذف پنل..."
-    pkill -f "$APP_DIR/app.py" || true
-    rm -rf "$APP_DIR"
-    echo "[+] حذف انجام شد."
-else
-    echo "گزینه نامعتبر."
+    echo "[*] ایجاد فایل سرویس systemd..."
+    cat > /etc/systemd/system/lorna.service <<'SERVICE_EOF'
+[Unit]
+Description=Lorna Network Monitor Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/network_monitor
+ExecStart=/opt/network_monitor/venv/bin/python /opt/network_monitor/app.py
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+    echo "[*] فعالسازی سرویس..."
+    systemctl daemon-reload
+    systemctl enable lorna.service
+    systemctl start lorna.service
+
+    echo "نصب و راه‌اندازی پنل با موفقیت انجام شد."
+    echo "به مرورگر بروید و http://<آدرس_IP_سرور>:$APP_PORT را باز کنید."
+    exit 0
 fi
+
+if [ "$CHOICE" == "2" ]; then
+    echo "[*] حذف پنل..."
+    systemctl stop lorna.service 2>/dev/null || true
+    systemctl disable lorna.service 2>/dev/null || true
+    rm -rf "$APP_DIR"
+    rm -f /etc/systemd/system/lorna.service
+    systemctl daemon-reload
+    echo "پنل و سرویس حذف شدند."
+    exit 0
+fi
+
+echo "انتخاب نامعتبر است."
+exit 1
