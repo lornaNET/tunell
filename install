@@ -53,7 +53,6 @@ prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 total_net = {'bytes_sent': 0, 'bytes_recv': 0}
 net_lock = threading.Lock()
 
-# برای تونل
 tunnel_info = {'ip': None, 'port': None}
 prev_tunnel = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 total_tunnel = {'bytes_sent': 0, 'bytes_recv': 0}
@@ -103,10 +102,6 @@ def update_network_usage():
         return round(up_MBps, 4), round(down_MBps, 4)
 
 def update_tunnel_usage():
-    # در اینجا ما سعی می‌کنیم ترافیک تونل رو با توجه به IP و پورت از net_connections محاسبه کنیم
-    # متأسفانه psutil مستقیماً شمارش byte روی کانکشن خاص نداره
-    # راه‌حل: فرض کنیم تونل روی یک اینترفیس مشخص هست یا با فیلتر روی اتصالات tcp روی ip:port خاص
-
     ip = tunnel_info.get('ip')
     port = tunnel_info.get('port')
 
@@ -114,18 +109,8 @@ def update_tunnel_usage():
         return 0.0, 0.0
 
     with tunnel_lock:
-        # یک راه ساده: دنبال اینترفیس‌ای که IP تونل روی اون هست بگردیم
-        # ولی چون ممکنه تونل TCP باشه، نمی‌تونیم مستقیم مصرفشو بدون ابزار تخصصی بخونیم
-        # اینجا فقط از کانکشن های psutil.net_connections فیلتر می‌گیریم و جمع bytes انجام نمیدیم
-
-        # به عنوان جایگزین، می‌تونیم مصرف شبکه کل رو جداگانه نگه داریم و تونل رو روی یک اینترفیس اختصاصی شبیه به tun0 فرض کنیم
-        # ولی چون تونل شما روی IP و پورت خاصه، باید به شما بگیم روش دقیق نیاز به ابزار های sniffing یا iptables هست
-
-        # برای مثال در این نسخه ساده ما مصرف کل شبکه رو در نظر می‌گیریم
-        # ولی شما می‌تونید یک اینترفیس تونل مثل tun0 داشته باشید و مصرفش رو اینجا بگیرید:
         try:
             ifaces = psutil.net_if_stats()
-            # فرض کنیم اینترفیس تونل تونل 'tun0' هست
             if 'tun0' in ifaces and ifaces['tun0'].isup:
                 counters = psutil.net_io_counters(pernic=True).get('tun0')
                 if counters:
@@ -164,7 +149,6 @@ login_page = '''
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>لورنا — ورود</title>
 <style>
-/* کدهای CSS مشابه کد قبلی ... */
 body {
   font-family: Tahoma, sans-serif;
   background: linear-gradient(135deg,#071026,#0b2b44);
@@ -327,70 +311,103 @@ h2 {
   border-radius: 16px;
   box-shadow: 0 0 12px rgba(0,0,0,0.7);
   color: #eaf6ff;
+  display: none;
 }
 #tunnelForm label {
   display: block;
-  margin-bottom: 8px;
-  font-weight: 700;
+  margin-bottom: 6px;
+  font-weight: 600;
 }
-#tunnelForm input[type=text] {
+#tunnelForm input {
   width: 100%;
   padding: 10px 12px;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   border-radius: 8px;
   border: none;
   font-size: 16px;
+  background: rgba(255,255,255,0.12);
+  color: #eaf6ff;
 }
 #tunnelForm button {
+  width: 100%;
+  padding: 12px 0;
   background: #7c3aed;
   border: none;
   border-radius: 10px;
   font-weight: 700;
-  color: #fff;
+  color: white;
   cursor: pointer;
-  width: 100%;
-  padding: 12px 0;
   font-size: 18px;
+}
+#showTunnelForm {
+  margin: 20px auto;
+  display: block;
+  padding: 10px 20px;
+  font-weight: 700;
+  background: #7c3aed;
+  color: white;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
   transition: background-color 0.3s ease;
 }
-#tunnelForm button:hover {
-  background: #5925a3;
+#showTunnelForm:hover {
+  background: #5b2cbf;
 }
-
-.chart-container {
-  max-width: 700px;
-  margin: 36px auto;
+.logout-btn {
+  background: #db2777;
+  color: white;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-weight: 700;
+  border: none;
+  cursor: pointer;
+  transition: background-color 0.3s ease;
+}
+.logout-btn:hover {
+  background: #9d174d;
+}
+footer {
+  text-align: center;
+  margin: 28px 0 12px 0;
+  color: rgba(234,246,255,0.6);
+  font-size: 14px;
 }
 </style>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <header>
-  <h1>پنل مانیتورینگ لورنا</h1>
+  <h1>داشبورد مانیتورینگ لورنا</h1>
   <form method="POST" action="/logout" style="margin:0;">
-    <button type="submit">خروج</button>
+    <button class="logout-btn" type="submit">خروج</button>
   </form>
 </header>
 <main>
   <div class="cards">
     <div class="card">
       <h2>مصرف CPU</h2>
-      <div class="value" id="cpuUsage">...</div>
+      <div class="value" id="cpuUsage">0%</div>
       <div class="label">درصد استفاده</div>
     </div>
     <div class="card">
       <h2>مصرف RAM</h2>
-      <div class="value" id="ramUsage">...</div>
+      <div class="value" id="ramUsage">0%</div>
       <div class="label">درصد استفاده</div>
     </div>
     <div class="card">
       <h2>مصرف شبکه کل</h2>
-      <div class="value net-values" id="netUp">↑ ... MB/s</div>
-      <div class="value net-values" id="netDown">↓ ... MB/s</div>
+      <div class="value net-values" id="netUp">↑ 0 MB/s</div>
+      <div class="value net-values" id="netDown">↓ 0 MB/s</div>
+      <div class="label">آپلود / دانلود</div>
+    </div>
+    <div class="card">
+      <h2>مصرف تونل</h2>
+      <div class="value net-values" id="tunnelUp">↑ 0 MB/s</div>
+      <div class="value net-values" id="tunnelDown">↓ 0 MB/s</div>
       <div class="label">آپلود / دانلود</div>
     </div>
   </div>
-
+  <button id="showTunnelForm">تنظیم سورس ایران تونل</button>
   <form id="tunnelForm" method="POST" action="/set_tunnel">
     <label for="ip">آدرس IP ایران تونل</label>
     <input type="text" id="ip" name="ip" placeholder="مثال: 5.123.45.67" required pattern="^(\d{1,3}\.){3}\d{1,3}$" />
@@ -398,67 +415,44 @@ h2 {
     <input type="text" id="port" name="port" placeholder="مثال: 12345" required pattern="^\d{1,5}$" />
     <button type="submit">تنظیم تونل</button>
   </form>
-
-  <div class="chart-container">
-    <canvas id="tunnelChart"></canvas>
-  </div>
-
 </main>
-
+<footer>
+  &copy; ۲۰۲۵ پنل مانیتورینگ لورنا
+</footer>
 <script>
-let tunnelUpData = [];
-let tunnelDownData = [];
-let labels = [];
+  const showBtn = document.getElementById('showTunnelForm');
+  const tunnelForm = document.getElementById('tunnelForm');
 
-const ctx = document.getElementById('tunnelChart').getContext('2d');
-const tunnelChart = new Chart(ctx, {
-  type: 'doughnut',
-  data: {
-    labels: ['آپلود (MB/s)', 'دانلود (MB/s)'],
-    datasets: [{
-      label: 'مصرف تونل',
-      data: [0, 0],
-      backgroundColor: ['#7c3aed', '#06b6d4'],
-      hoverOffset: 10
-    }]
-  },
-  options: {
-    responsive: true,
-    plugins: {
-      legend: { position: 'bottom' }
+  showBtn.addEventListener('click', () => {
+    tunnelForm.style.display = tunnelForm.style.display === 'none' || tunnelForm.style.display === '' ? 'block' : 'none';
+  });
+
+  async function fetchData() {
+    try {
+      const response = await fetch('/status');
+      if (!response.ok) throw new Error('Network response was not ok');
+      const data = await response.json();
+
+      document.getElementById('cpuUsage').textContent = data.cpu + '%';
+      document.getElementById('ramUsage').textContent = data.ram + '%';
+      document.getElementById('netUp').textContent = '↑ ' + data.net_up + ' MB/s';
+      document.getElementById('netDown').textContent = '↓ ' + data.net_down + ' MB/s';
+      document.getElementById('tunnelUp').textContent = '↑ ' + data.tunnel_up + ' MB/s';
+      document.getElementById('tunnelDown').textContent = '↓ ' + data.tunnel_down + ' MB/s';
+    } catch (e) {
+      console.error('Fetch error:', e);
     }
   }
-});
 
-async function fetchData(){
-  try {
-    const resp = await fetch('/api/usage');
-    const data = await resp.json();
-    document.getElementById('cpuUsage').innerText = data.cpu + ' %';
-    document.getElementById('ramUsage').innerText = data.ram + ' %';
-    document.getElementById('netUp').innerText = '↑ ' + data.net_up + ' MB/s';
-    document.getElementById('netDown').innerText = '↓ ' + data.net_down + ' MB/s';
-
-    tunnelChart.data.datasets[0].data = [data.tunnel_up, data.tunnel_down];
-    tunnelChart.update();
-  } catch(e){
-    console.error('خطا در دریافت داده‌ها:', e);
-  }
-}
-
-setInterval(fetchData, 2000);
-fetchData();
+  setInterval(fetchData, 1500);
+  fetchData();
 </script>
-
 </body>
 </html>
 '''
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session and session['logged_in']:
-        return redirect(url_for('dashboard'))
-
     error = None
     if request.method == 'POST':
         username = request.form.get('username', '')
@@ -468,108 +462,107 @@ def login():
             session['logged_in'] = True
             return redirect(url_for('dashboard'))
         else:
-            error = "نام کاربری، رمز یا لایسنس اشتباه است."
-
+            error = 'نام کاربری، رمز عبور یا لایسنس اشتباه است.'
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
-    if 'logged_in' not in session or not session['logged_in']:
+    if not session.get('logged_in'):
         return redirect(url_for('login'))
     return render_template_string(dashboard_page)
+
+@app.route('/status')
+def status():
+    if not session.get('logged_in'):
+        return jsonify({'error': 'unauthorized'}), 401
+    cpu = psutil.cpu_percent()
+    ram = psutil.virtual_memory().percent
+    net_up, net_down = update_network_usage()
+    tunnel_up, tunnel_down = update_tunnel_usage()
+    return jsonify({
+        'cpu': cpu,
+        'ram': ram,
+        'net_up': net_up,
+        'net_down': net_down,
+        'tunnel_up': tunnel_up,
+        'tunnel_down': tunnel_down
+    })
+
+@app.route('/set_tunnel', methods=['POST'])
+def set_tunnel():
+    if not session.get('logged_in'):
+        return redirect(url_for('login'))
+    ip = request.form.get('ip', '').strip()
+    port = request.form.get('port', '').strip()
+    # ساده بررسی الگو (IPv4 و پورت)
+    import re
+    ip_pattern = re.compile(r'^(\d{1,3}\.){3}\d{1,3}$')
+    port_pattern = re.compile(r'^\d{1,5}$')
+    if not ip_pattern.match(ip):
+        return "IP نامعتبر است", 400
+    if not port_pattern.match(port):
+        return "پورت نامعتبر است", 400
+    tunnel_info['ip'] = ip
+    tunnel_info['port'] = port
+    # ریست مقادیر قبلی برای محاسبه سرعت درست
+    with tunnel_lock:
+        prev_tunnel['bytes_sent'] = None
+        prev_tunnel['bytes_recv'] = None
+        prev_tunnel['time'] = None
+    return redirect(url_for('dashboard'))
 
 @app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
-@app.route('/api/usage')
-def api_usage():
-    if 'logged_in' not in session or not session['logged_in']:
-        return jsonify({"error": "Unauthorized"}), 401
-
-    cpu = psutil.cpu_percent(interval=0.2)
-    ram = psutil.virtual_memory().percent
-    net_up, net_down = update_network_usage()
-    tunnel_up, tunnel_down = update_tunnel_usage()
-    return jsonify({
-        "cpu": cpu,
-        "ram": ram,
-        "net_up": net_up,
-        "net_down": net_down,
-        "tunnel_up": tunnel_up,
-        "tunnel_down": tunnel_down
-    })
-
-@app.route('/set_tunnel', methods=['POST'])
-def set_tunnel():
-    if 'logged_in' not in session or not session['logged_in']:
-        return redirect(url_for('login'))
-
-    ip = request.form.get('ip', '').strip()
-    port = request.form.get('port', '').strip()
-    # اعتبارسنجی ساده IP و پورت
-    import re
-    ip_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-    port_pattern = r'^\d{1,5}$'
-    if not re.match(ip_pattern, ip):
-        return "آدرس IP نامعتبر است.", 400
-    if not re.match(port_pattern, port) or not (0 < int(port) <= 65535):
-        return "پورت نامعتبر است.", 400
-
-    tunnel_info['ip'] = ip
-    tunnel_info['port'] = int(port)
-    return redirect(url_for('dashboard'))
-
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=APP_PORT)
 PYEOF
 
-  echo "[*] ایجاد سرویس systemd..."
-  cat > /etc/systemd/system/lorna_monitor.service <<EOF
+  echo "[*] ایجاد فایل سرویس systemd..."
+  cat > /etc/systemd/system/lorna_monitor.service <<'SEOF'
 [Unit]
-Description=پنل مانیتورینگ لورنا
+Description=Lorna Network Monitor
 After=network.target
 
 [Service]
-Type=simple
 User=root
-WorkingDirectory=$APP_DIR
-ExecStart=$VENV_DIR/bin/python3 $APP_DIR/app.py
-Restart=on-failure
+WorkingDirectory=/opt/network_monitor
+ExecStart=/opt/network_monitor/venv/bin/python /opt/network_monitor/app.py
+Restart=always
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SEOF
 
-  echo "[*] فعالسازی سرویس..."
+  echo "[*] فعال سازی سرویس..."
   systemctl daemon-reload
-  systemctl enable --now lorna_monitor.service
-  echo "[*] نصب پنل با موفقیت انجام شد."
-  echo "پنل از طریق مرورگر به آدرس زیر در دسترس است:"
-  echo "http://$(hostname -I | awk '{print $1}'):$APP_PORT"
-  echo "نام کاربری/رمز پیش‌فرض: admin / admin123"
-  echo "لایسنس: lorna"
+  systemctl enable lorna_monitor.service
+  systemctl restart lorna_monitor.service
+
+  echo "[+] نصب با موفقیت انجام شد. به آدرس http://سرور_شما:5000 مراجعه کنید."
 }
 
 function remove_panel() {
-  systemctl stop lorna_monitor.service || true
-  systemctl disable lorna_monitor.service || true
-  rm -rf "$APP_DIR"
+  echo "[*] حذف سرویس و فایل‌ها..."
+  systemctl stop lorna_monitor.service
+  systemctl disable lorna_monitor.service
   rm -f /etc/systemd/system/lorna_monitor.service
+  rm -rf "$APP_DIR"
   systemctl daemon-reload
-  echo "پنل با موفقیت حذف شد."
+  echo "[+] پنل حذف شد."
 }
 
 while true; do
   print_menu
-  read -r choice
+  read choice
   case $choice in
     1) install_panel ;;
     2) remove_panel ;;
     3) exit 0 ;;
-    *) echo "گزینه نامعتبر است." ;;
+    *) echo "گزینه نامعتبر است. لطفا دوباره تلاش کنید." ;;
   esac
-  echo "ادامه با Enter..."
-  read -r _
+  read -p "برای ادامه کلیدی بزنید..."
 done
