@@ -1,38 +1,51 @@
 #!/bin/bash
 
-echo "=== نصب پنل مانیتورینگ شبکه روی اوبنتو 22.04 ==="
+echo "=== مدیریت پنل مانیتورینگ شبکه روی اوبونتو 22.04 ==="
+echo "1) نصب پنل"
+echo "2) حذف کامل پنل"
+read -p "لطفاً گزینه مورد نظر را وارد کنید (1 یا 2): " CHOICE
 
-read -p "یوزرنیم پنل: " PANEL_USER
-read -sp "پسورد پنل: " PANEL_PASS
-echo
-read -p "پورت پنل (مثلاً 8080): " PANEL_PORT
+if [ "$CHOICE" == "1" ]; then
+    # ================= نصب =================
+    read -p "یوزرنیم پنل: " PANEL_USER
+    read -sp "پسورد پنل: " PANEL_PASS
+    echo
+    read -p "پورت پنل (مثلاً 8080): " PANEL_PORT
 
-# به‌روزرسانی سیستم
-apt update && apt upgrade -y
+    # به‌روزرسانی سیستم
+    apt update && apt upgrade -y
 
-# نصب ابزارهای مورد نیاز
-apt install -y vnstat apache2 php php-cli unzip
+    # نصب ابزارهای مورد نیاز
+    apt install -y vnstat apache2 php php-cli unzip wget apache2-utils
 
-# فعال‌سازی vnStat
-systemctl enable vnstat
-systemctl start vnstat
+    # فعال‌سازی vnStat
+    systemctl enable vnstat
+    systemctl start vnstat
 
-# دانلود رابط وب vnStat (vnstat-php)
-cd /var/www/html
-wget https://github.com/bjd/vnstat-php-frontend/archive/master.zip
-unzip master.zip
-mv vnstat-php-frontend-master/* .
-rm -rf vnstat-php-frontend-master master.zip
+    # پاک کردن صفحه پیش‌فرض Apache
+    rm -f /var/www/html/index.html
 
-# ایجاد یوزر و پسورد پنل
-htpasswd -cb /etc/apache2/.htpasswd $PANEL_USER $PANEL_PASS
+    # دانلود رابط وب vnStat (vnstat-php)
+    cd /var/www/html
+    wget https://github.com/bjd/vnstat-php-frontend/archive/master.zip
+    unzip master.zip
+    mv vnstat-php-frontend-master/* .
+    rm -rf vnstat-php-frontend-master master.zip
 
-# تنظیم پورت سفارشی
-sed -i "s/Listen 80/Listen $PANEL_PORT/g" /etc/apache2/ports.conf
-sed -i "s/:80/:$PANEL_PORT/g" /etc/apache2/sites-available/000-default.conf
+    # اطمینان از وجود فایل index.php
+    if [ ! -f /var/www/html/index.php ]; then
+        echo "<?php phpinfo(); ?>" > /var/www/html/index.php
+    fi
 
-# فعال‌سازی احراز هویت
-cat <<EOF >/etc/apache2/conf-available/auth.conf
+    # ایجاد یوزر و پسورد پنل
+    htpasswd -cb /etc/apache2/.htpasswd $PANEL_USER $PANEL_PASS
+
+    # تنظیم پورت سفارشی
+    sed -i "s/Listen 80/Listen $PANEL_PORT/g" /etc/apache2/ports.conf
+    sed -i "s/:80/:$PANEL_PORT/g" /etc/apache2/sites-available/000-default.conf
+
+    # فعال‌سازی احراز هویت
+    cat <<EOF >/etc/apache2/conf-available/auth.conf
 <Directory "/var/www/html">
     AuthType Basic
     AuthName "Login Required"
@@ -40,11 +53,27 @@ cat <<EOF >/etc/apache2/conf-available/auth.conf
     Require valid-user
 </Directory>
 EOF
-a2enconf auth
+    a2enconf auth
 
-# راه‌اندازی مجدد Apache
-systemctl restart apache2
+    # راه‌اندازی مجدد Apache
+    systemctl restart apache2
 
-echo "✅ نصب کامل شد."
-echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
-echo "http://IP-Server:$PANEL_PORT"
+    echo "✅ نصب کامل شد."
+    echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
+    echo "http://IP-Server:$PANEL_PORT"
+
+elif [ "$CHOICE" == "2" ]; then
+    # ================= حذف =================
+    echo "⚠ در حال حذف کامل پنل و پکیج‌های نصب شده..."
+    systemctl stop apache2 vnstat
+    apt remove --purge -y vnstat apache2 php php-cli unzip wget apache2-utils
+    apt autoremove -y
+    rm -rf /var/www/html/*
+    rm -f /etc/apache2/.htpasswd
+    rm -f /etc/apache2/conf-available/auth.conf
+    systemctl daemon-reload
+    echo "✅ پنل و تمام فایل‌ها حذف شدند."
+
+else
+    echo "❌ گزینه نامعتبر!"
+fi
