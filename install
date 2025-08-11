@@ -1,68 +1,70 @@
 #!/bin/bash
+
 set -e
 
-APP_DIR="/opt/network_monitor"
+APP_DIR="/opt/lorna"
 VENV_DIR="$APP_DIR/venv"
 LICENSE_FILE="$APP_DIR/license.key"
-LICENSE_VALUE="lorna"
-APP_PORT=5000  # default, but can be changed in install
 
-function print_menu() {
-  clear
-  echo "=============================="
-  echo " Lorna Network Monitor Panel "
-  echo "=============================="
-  echo "1) Install Panel"
-  echo "2) Remove Panel"
-  echo "3) Exit"
-  echo "=============================="
-  echo -n "Enter your choice: "
-}
+echo "---- Lorna Panel Installer ----"
 
-function install_panel() {
-  echo -n "Enter the port for the panel [default: 5000]: "
-  read -r input_port
+# دریافت پورت
+read -p "Enter the port for the panel [default: 5000]: " APP_PORT
+if [[ -z "$APP_PORT" ]]; then
+  APP_PORT=5000
+fi
 
-  if [[ -n "$input_port" ]]; then
-    if ! [[ "$input_port" =~ ^[0-9]+$ ]] || [ "$input_port" -lt 1 ] || [ "$input_port" -gt 65535 ]; then
-      echo "Invalid port number. Using default port 5000."
-      APP_PORT=5000
-    else
-      APP_PORT=$input_port
-    fi
-  else
-    APP_PORT=5000
-  fi
+if ! [[ "$APP_PORT" =~ ^[0-9]+$ ]] || [ "$APP_PORT" -lt 1 ] || [ "$APP_PORT" -gt 65535 ]; then
+  echo "Invalid port number. Using default port 5000."
+  APP_PORT=5000
+fi
 
-  echo "[*] Updating repositories and installing dependencies..."
-  apt update
-  apt install -y python3 python3-venv python3-pip curl >/dev/null
+# دریافت یوزرنیم
+read -p "Enter username for login [default: admin]: " USERNAME
+if [[ -z "$USERNAME" ]]; then
+  USERNAME="admin"
+fi
 
-  echo "[*] Creating application directory..."
-  mkdir -p "$APP_DIR"
-  echo "$LICENSE_VALUE" > "$LICENSE_FILE"
-  chmod 600 "$LICENSE_FILE"
+# دریافت پسورد
+read -p "Enter password for login [default: admin123]: " PASSWORD
+if [[ -z "$PASSWORD" ]]; then
+  PASSWORD="admin123"
+fi
 
-  echo "[*] Creating Python virtual environment..."
-  python3 -m venv "$VENV_DIR"
-  source "$VENV_DIR/bin/activate"
+echo "[*] Updating package lists..."
+apt update -y
 
-  echo "[*] Installing required Python packages..."
-  pip install --upgrade pip >/dev/null
-  pip install flask psutil netifaces >/dev/null
+echo "[*] Installing required packages..."
+apt install -y python3 python3-venv python3-pip curl >/dev/null
 
-  echo "[*] Creating Flask application file..."
+echo "[*] Creating application directory at $APP_DIR ..."
+mkdir -p "$APP_DIR"
+chmod 700 "$APP_DIR"
 
-  # Use a here-doc with variable substitution for APP_PORT
-  cat > "$APP_DIR/app.py" <<PYEOF
+# ذخیره لایسنس (مثال: lorna)
+echo "lorna" > "$LICENSE_FILE"
+chmod 600 "$LICENSE_FILE"
+
+echo "[*] Creating Python virtual environment..."
+python3 -m venv "$VENV_DIR"
+
+echo "[*] Activating virtual environment and installing dependencies..."
+source "$VENV_DIR/bin/activate"
+pip install --upgrade pip >/dev/null
+pip install flask psutil netifaces >/dev/null
+deactivate
+
+echo "[*] Writing Flask app to $APP_DIR/app.py..."
+
+cat > "$APP_DIR/app.py" <<EOF
 from flask import Flask, render_template_string, request, redirect, session, jsonify
-import psutil, os, time, threading, re
+import psutil, os, time, threading
 
 app = Flask(__name__)
-app.secret_key = 'super_secret_key_lorna_change_me'
+app.secret_key = 'super_secret_key_lorna_change_me_please_change_this'
 
-USERNAME = "admin"
-PASSWORD = "admin123"
+USERNAME = "$USERNAME"
+PASSWORD = "$PASSWORD"
 LICENSE_FILE = "$LICENSE_FILE"
 APP_PORT = $APP_PORT
 
@@ -70,10 +72,11 @@ prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 total_net = {'bytes_sent': 0, 'bytes_recv': 0}
 net_lock = threading.Lock()
 
-tunnel_info = {'ip': None, 'port': None}
 prev_tunnel = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 total_tunnel = {'bytes_sent': 0, 'bytes_recv': 0}
 tunnel_lock = threading.Lock()
+
+IRAN_IP = "185.79.160.0"  # نمونه IP ایران، می‌توانید تغییر دهید
 
 def verify_license(license_key):
     try:
@@ -119,12 +122,6 @@ def update_network_usage():
         return round(up_MBps, 4), round(down_MBps, 4)
 
 def update_tunnel_usage():
-    ip = tunnel_info.get('ip')
-    port = tunnel_info.get('port')
-
-    if not ip or not port:
-        return 0.0, 0.0
-
     with tunnel_lock:
         try:
             ifaces = psutil.net_if_stats()
@@ -138,10 +135,10 @@ def update_tunnel_usage():
                         prev_tunnel['bytes_sent'] = cur_sent
                         prev_tunnel['bytes_recv'] = cur_recv
                         prev_tunnel['time'] = now
-                        return 0.0, 0.0
+                        return 0.0, 0.0, total_tunnel['bytes_sent'], total_tunnel['bytes_recv']
                     dt = now - prev_tunnel['time']
                     if dt <= 0:
-                        return 0.0, 0.0
+                        return 0.0, 0.0, total_tunnel['bytes_sent'], total_tunnel['bytes_recv']
                     delta_sent = cur_sent - prev_tunnel['bytes_sent']
                     delta_recv = cur_recv - prev_tunnel['bytes_recv']
                     total_tunnel['bytes_sent'] += max(delta_sent, 0)
@@ -152,319 +149,255 @@ def update_tunnel_usage():
 
                     up_MBps = delta_sent / (1024*1024) / dt
                     down_MBps = delta_recv / (1024*1024) / dt
-                    return round(up_MBps, 4), round(down_MBps, 4)
+                    return round(up_MBps, 4), round(down_MBps, 4), total_tunnel['bytes_sent'], total_tunnel['bytes_recv']
         except Exception:
-            return 0.0, 0.0
+            return 0.0, 0.0, total_tunnel['bytes_sent'], total_tunnel['bytes_recv']
 
-    return 0.0, 0.0
+    return 0.0, 0.0, total_tunnel['bytes_sent'], total_tunnel['bytes_recv']
 
-login_page = '''
+login_page = """
 <!doctype html>
-<html lang="en" dir="ltr">
+<html lang='en' dir='ltr'>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Lorna — Login</title>
+<meta charset='utf-8'>
+<title>Login - Lorna Panel</title>
 <style>
-body {
-  font-family: Tahoma, sans-serif;
-  background: linear-gradient(135deg,#071026,#0b2b44);
-  color: #eaf6ff;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  height: 100vh;
-  margin: 0;
-}
-.container {
-  background: rgba(255,255,255,0.05);
-  padding: 24px 30px;
-  border-radius: 16px;
-  box-shadow: 0 0 12px rgba(0,0,0,0.7);
-  max-width: 400px;
-  width: 100%;
-  text-align: center;
-}
-h1 {
-  margin-bottom: 20px;
-  font-weight: 600;
-}
-input[type=text], input[type=password] {
-  width: 100%;
-  padding: 10px 12px;
-  margin: 10px 0 16px 0;
-  border-radius: 8px;
-  border: none;
-  font-size: 16px;
-}
-button {
-  width: 100%;
-  padding: 12px 0;
-  background: #06b6d4;
-  border: none;
-  border-radius: 10px;
-  font-weight: 700;
-  color: #051426;
-  cursor: pointer;
-  font-size: 18px;
-}
-.error {
-  background: #ffefef;
-  color: #8b0000;
-  padding: 10px;
-  border-radius: 8px;
-  margin-bottom: 14px;
-}
-.small {
-  margin-top: 12px;
-  color: rgba(234,246,255,0.7);
-  font-size: 14px;
-}
+  body { font-family: Tahoma, sans-serif; background:#071b3b; color:#eaf6ff; display:flex; justify-content:center; align-items:center; height:100vh; margin:0; }
+  form { background:rgba(255,255,255,0.1); padding:30px; border-radius:12px; box-shadow: 0 0 15px #06b6d4; }
+  input { display:block; margin-bottom:15px; width: 250px; padding: 10px; border: none; border-radius: 6px; font-size: 16px; }
+  button { width: 100%; background:#06b6d4; border:none; padding:10px; border-radius:8px; color:#fff; font-weight:600; font-size:16px; cursor:pointer; }
+  button:hover { background:#028ea3; }
+  .error { color:#ff6b6b; margin-bottom:15px; font-weight:600; }
 </style>
 </head>
 <body>
-<div class="container">
-  <h1>Login to Lorna Panel</h1>
-  {% if error %}<div class="error">{{ error }}</div>{% endif %}
-  <form method="POST">
-    <input type="text" name="username" placeholder="Username" required />
-    <input type="password" name="password" placeholder="Password" required />
-    <input type="text" name="license" placeholder="License Key (lorna)" required />
-    <button type="submit">Login</button>
+  <form method='POST'>
+    <h2>Login</h2>
+    {% if error %}
+      <p class="error">{{ error }}</p>
+    {% endif %}
+    <input type='text' name='username' placeholder='Username' required autofocus />
+    <input type='password' name='password' placeholder='Password' required />
+    <button type='submit'>Login</button>
   </form>
-  <div class="small">Default username/password: <b>admin / admin123</b></div>
-</div>
 </body>
 </html>
-'''
+"""
 
-dashboard_page = '''
+dashboard_page = """
 <!doctype html>
-<html lang="en" dir="ltr">
+<html lang='en' dir='ltr'>
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta charset='utf-8' />
+<meta name='viewport' content='width=device-width, initial-scale=1' />
 <title>Lorna — Dashboard</title>
 <style>
-body {
-  font-family: Tahoma, sans-serif;
-  margin: 0;
-  background: linear-gradient(180deg,#04102a,#071b3b);
-  color: #eaf6ff;
-  min-height: 100vh;
-  direction: ltr;
-}
-header {
-  background: rgba(255,255,255,0.05);
-  backdrop-filter: blur(8px);
-  padding: 14px 24px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-h1 {
-  margin: 0;
-}
-button {
-  background: none;
-  border: none;
-  color: #06b6d4;
-  font-weight: 600;
-  cursor: pointer;
-  font-size: 16px;
-  border-radius: 8px;
-  padding: 6px 10px;
-  transition: background 0.3s ease;
-}
-button:hover {
-  background: rgba(6,182,212,0.2);
-}
-.main {
-  padding: 20px 24px;
-  max-width: 960px;
-  margin: 0 auto;
-}
-.stats {
-  display: flex;
-  gap: 24px;
-  flex-wrap: wrap;
-}
-.card {
-  background: rgba(255,255,255,0.05);
-  border-radius: 16px;
-  padding: 20px;
-  flex: 1 1 200px;
-  box-shadow: 0 0 10px rgba(6,182,212,0.3);
-  min-width: 200px;
-}
-.card h2 {
-  margin-top: 0;
-  font-weight: 600;
-  font-size: 22px;
-}
-.card p {
-  margin: 6px 0 0 0;
-  font-size: 16px;
-}
-</style>
-<script>
-async function fetchStats() {
-  try {
-    const response = await fetch('/api/stats');
-    if (!response.ok) {
-      throw new Error('Failed to fetch stats');
-    }
-    const data = await response.json();
-    document.getElementById('net-up').textContent = data.network_upload + ' MB/s';
-    document.getElementById('net-down').textContent = data.network_download + ' MB/s';
-    document.getElementById('tun-up').textContent = data.tunnel_upload + ' MB/s';
-    document.getElementById('tun-down').textContent = data.tunnel_download + ' MB/s';
-  } catch (e) {
-    console.error(e);
+  body {
+    font-family: Tahoma, sans-serif;
+    margin: 0;
+    background: linear-gradient(180deg,#04102a,#071b3b);
+    color: #eaf6ff;
+    min-height: 100vh;
+    direction: ltr;
   }
-}
-
-setInterval(fetchStats, 3000);
-window.onload = fetchStats;
-</script>
+  header {
+    background: rgba(255,255,255,0.05);
+    backdrop-filter: blur(8px);
+    padding: 14px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  h1 {
+    margin: 0;
+  }
+  button {
+    background: none;
+    border: none;
+    color: #06b6d4;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 16px;
+    border-radius: 8px;
+    padding: 6px 10px;
+    transition: background 0.3s ease;
+  }
+  button:hover {
+    background: rgba(6,182,212,0.2);
+  }
+  .main {
+    padding: 20px 24px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  .stats {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .card {
+    background: rgba(255,255,255,0.05);
+    border-radius: 16px;
+    padding: 20px;
+    flex: 1 1 200px;
+    box-shadow: 0 0 10px rgba(6,182,212,0.3);
+    min-width: 200px;
+  }
+  .card h2 {
+    margin-top: 0;
+    font-weight: 600;
+    font-size: 22px;
+  }
+  .card p {
+    margin: 6px 0 0 0;
+    font-size: 16px;
+  }
+  #tunnel-chart-container {
+    margin-top: 20px;
+    max-width: 400px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 16px;
+    padding: 20px;
+    box-shadow: 0 0 15px #06b6d4;
+  }
+</style>
 </head>
 <body>
 <header>
-  <h1>Lorna Network Monitor Dashboard</h1>
-  <form action="/logout" method="POST" style="margin:0;">
+  <h1>Lorna Dashboard</h1>
+  <form method="POST" action="/logout" style="margin:0;">
     <button type="submit">Logout</button>
   </form>
 </header>
-<main class="main">
+<div class="main">
   <div class="stats">
     <div class="card">
-      <h2>Network Usage</h2>
-      <p>Upload: <span id="net-up">0.0000</span></p>
-      <p>Download: <span id="net-down">0.0000</span></p>
+      <h2>Network Speed</h2>
+      <p>Upload: <span id="up_speed">0</span> MB/s</p>
+      <p>Download: <span id="down_speed">0</span> MB/s</p>
     </div>
     <div class="card">
-      <h2>Tunnel Usage (tun0)</h2>
-      <p>Upload: <span id="tun-up">0.0000</span></p>
-      <p>Download: <span id="tun-down">0.0000</span></p>
+      <h2>Tunnel Speed (tun0)</h2>
+      <p>Upload: <span id="tun_up_speed">0</span> MB/s</p>
+      <p>Download: <span id="tun_down_speed">0</span> MB/s</p>
     </div>
   </div>
-</main>
+
+  <div id="tunnel-chart-container">
+    <h2>Tunnel Data Usage (IP: {{ iran_ip }})</h2>
+    <canvas id="tunnelChart" width="400" height="400"></canvas>
+    <p style="text-align:center; margin-top: 10px; font-size: 14px;">
+      Total Upload: <span id="total_upload">0</span> MB |
+      Total Download: <span id="total_download">0</span> MB
+    </p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+let ctx = document.getElementById('tunnelChart').getContext('2d');
+let tunnelChart = new Chart(ctx, {
+  type: 'doughnut',
+  data: {
+    labels: ['Upload', 'Download'],
+    datasets: [{
+      label: 'Tunnel Data (MB)',
+      data: [0, 0],
+      backgroundColor: ['#06b6d4', '#d4626a'],
+      hoverOffset: 30,
+    }]
+  },
+  options: {
+    responsive: true,
+    animation: {
+      duration: 800,
+      easing: 'easeOutBounce'
+    }
+  }
+});
+
+function updateData() {
+  fetch('/api/tunnel_speed')
+    .then(response => response.json())
+    .then(data => {
+      document.getElementById('up_speed').innerText = data.up_speed;
+      document.getElementById('down_speed').innerText = data.down_speed;
+      document.getElementById('tun_up_speed').innerText = data.tun_up_speed;
+      document.getElementById('tun_down_speed').innerText = data.tun_down_speed;
+
+      tunnelChart.data.datasets[0].data = [data.total_tun_up, data.total_tun_down];
+      tunnelChart.update();
+
+      document.getElementById('total_upload').innerText = (data.total_tun_up).toFixed(2);
+      document.getElementById('total_download').innerText = (data.total_tun_down).toFixed(2);
+    });
+}
+
+setInterval(updateData, 2000);
+updateData();
+</script>
 </body>
 </html>
-'''
+"""
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if 'logged_in' in session and session['logged_in']:
         return redirect('/dashboard')
 
-    error = None
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        license_key = request.form.get('license')
-
-        if not verify_license(license_key):
-            error = "Invalid license key."
-        elif username == USERNAME and password == PASSWORD:
+        username = request.form.get('username', '')
+        password = request.form.get('password', '')
+        if username == USERNAME and password == PASSWORD:
             session['logged_in'] = True
             return redirect('/dashboard')
         else:
-            error = "Invalid username or password."
-
-    return render_template_string(login_page, error=error)
+            return render_template_string(login_page, error="Invalid credentials")
+    return render_template_string(login_page)
 
 @app.route('/dashboard')
 def dashboard():
-    if 'logged_in' not in session or not session['logged_in']:
+    if not session.get('logged_in'):
         return redirect('/')
-    return render_template_string(dashboard_page)
-
-@app.route('/api/stats')
-def api_stats():
-    if 'logged_in' not in session or not session['logged_in']:
-        return jsonify({'error': 'Unauthorized'}), 401
-    net_up, net_down = update_network_usage()
-    tun_up, tun_down = update_tunnel_usage()
-    return jsonify({
-        'network_upload': net_up,
-        'network_download': net_down,
-        'tunnel_upload': tun_up,
-        'tunnel_download': tun_down,
-    })
+    return render_template_string(dashboard_page, iran_ip=IRAN_IP)
 
 @app.route('/logout', methods=['POST'])
 def logout():
     session.clear()
     return redirect('/')
 
+@app.route('/api/speed')
+def api_speed():
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    up, down = update_network_usage()
+    return jsonify({'up_speed': up, 'down_speed': down})
+
+@app.route('/api/tunnel_speed')
+def api_tunnel_speed():
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+    up, down, total_up_bytes, total_down_bytes = update_tunnel_usage()
+    total_up_MB = total_up_bytes / (1024*1024)
+    total_down_MB = total_down_bytes / (1024*1024)
+    up_net, down_net = update_network_usage()
+    return jsonify({
+        'tun_up_speed': up,
+        'tun_down_speed': down,
+        'total_tun_up': total_up_MB,
+        'total_tun_down': total_down_MB,
+        'up_speed': up_net,
+        'down_speed': down_net,
+    })
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=APP_PORT)
-PYEOF
-
-  deactivate
-
-  echo "[*] Creating systemd service..."
-
-  cat > /etc/systemd/system/lorna.service <<EOF
-[Unit]
-Description=Lorna Network Monitor Panel
-After=network.target
-
-[Service]
-User=root
-WorkingDirectory=$APP_DIR
-ExecStart=$VENV_DIR/bin/python $APP_DIR/app.py
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
 EOF
 
-  echo "[*] Enabling and starting the service..."
-  systemctl daemon-reload
-  systemctl enable lorna.service
-  systemctl restart lorna.service
+echo "[*] Starting Flask app..."
+nohup "$VENV_DIR/bin/python" "$APP_DIR/app.py" > /var/log/lorna.log 2>&1 &
 
-  echo "Installation complete! Access your panel at: http://your_server_ip:$APP_PORT"
-}
-
-function remove_panel() {
-  echo "[*] Stopping and disabling service..."
-  systemctl stop lorna.service || true
-  systemctl disable lorna.service || true
-
-  echo "[*] Removing service file..."
-  rm -f /etc/systemd/system/lorna.service
-
-  echo "[*] Removing application files..."
-  rm -rf "$APP_DIR"
-
-  echo "[*] Reloading systemd daemon..."
-  systemctl daemon-reload
-
-  echo "Removal complete."
-}
-
-while true; do
-  print_menu
-  read -r choice
-  case $choice in
-    1)
-      install_panel
-      read -p "Press Enter to continue..."
-      ;;
-    2)
-      remove_panel
-      read -p "Press Enter to continue..."
-      ;;
-    3)
-      echo "Goodbye!"
-      exit 0
-      ;;
-    *)
-      echo "Invalid option. Try again."
-      read -p "Press Enter to continue..."
-      ;;
-  esac
-done
+echo "Installation complete!"
+echo "You can access the dashboard at http://your_server_ip:$APP_PORT"
+echo "Login with username: $USERNAME"
+echo "and password: $PASSWORD"
