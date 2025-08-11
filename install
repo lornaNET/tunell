@@ -1,64 +1,101 @@
 #!/bin/bash
 
 echo "=== مدیریت پنل مانیتورینگ Netdata روی اوبونتو 22.04 ==="
-echo "1) نصب پنل"
-echo "2) حذف کامل پنل"
-read -p "لطفاً گزینه مورد نظر را وارد کنید (1 یا 2): " CHOICE
+echo "1) نصب پنل (پورت پیش‌فرض 19999، بدون احراز هویت)"
+echo "2) فعال‌سازی احراز هویت و تغییر پورت"
+echo "3) حذف کامل پنل"
+read -p "لطفاً گزینه مورد نظر را وارد کنید (1 یا 2 یا 3): " CHOICE
 
-if [ "$CHOICE" == "1" ]; then
-    read -p "یوزرنیم پنل: " PANEL_USER
-    read -sp "پسورد پنل: " PANEL_PASS
-    echo
-    read -p "پورت پنل (مثلاً 19999): " PANEL_PORT
+NETDATA_CONF="/etc/netdata/netdata.conf"
+HTPASSWD_FILE="/etc/netdata/htpasswd"
 
+function install_netdata() {
+    echo "در حال به‌روزرسانی سیستم..."
     apt update && apt upgrade -y
+
+    echo "در حال نصب پیش‌نیازها..."
     apt install -y curl apache2-utils
 
+    echo "اگر قبلاً نصب بود، پاک می‌کنیم..."
     systemctl stop netdata 2>/dev/null
     systemctl disable netdata 2>/dev/null
     apt remove --purge -y netdata
     rm -rf /etc/netdata
 
-    bash <(curl -L -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
+    echo "در حال نصب Netdata..."
+    bash <(curl -Ss https://my-netdata.io/kickstart.sh) --dont-wait --disable-telemetry
 
-    sleep 5
+    echo "راه‌اندازی مجدد Netdata..."
+    systemctl restart netdata
 
-    if [ ! -f /etc/netdata/netdata.conf ]; then
-        echo "❌ فایل کانفیگ netdata پیدا نشد!"
+    echo "✅ نصب با موفقیت انجام شد."
+    echo "برای مشاهده پنل، مرورگر را باز کرده و آدرس زیر را وارد کنید:"
+    echo "http://IP-Server:19999"
+}
+
+function enable_auth_and_port() {
+    if [ ! -f "$NETDATA_CONF" ]; then
+        echo "❌ فایل کانفیگ Netdata پیدا نشد. ابتدا باید نصب شود."
         exit 1
     fi
 
-    # اضافه کردن یا پیدا کردن بخش [web]
-    if ! grep -q "^\[web\]" /etc/netdata/netdata.conf; then
-        echo -e "\n[web]" >> /etc/netdata/netdata.conf
+    read -p "یوزرنیم احراز هویت: " PANEL_USER
+    read -sp "پسورد احراز هویت: " PANEL_PASS
+    echo
+    read -p "پورت جدید Netdata (مثلاً 19999): " PANEL_PORT
+
+    # اضافه یا ویرایش بخش [web]
+    if grep -q "^\[web\]" "$NETDATA_CONF"; then
+        sed -i "/^\[web\]/,/^\[/ s/^bind port = .*/bind port = $PANEL_PORT/" "$NETDATA_CONF" || \
+        sed -i "/^\[web\]/a bind port = $PANEL_PORT" "$NETDATA_CONF"
+        if ! grep -q "basic auth login file" "$NETDATA_CONF"; then
+            sed -i "/^\[web\]/a basic auth login file = $HTPASSWD_FILE" "$NETDATA_CONF"
+        else
+            sed -i "s|basic auth login file = .*|basic auth login file = $HTPASSWD_FILE|" "$NETDATA_CONF"
+        fi
+    else
+        cat <<EOF >> "$NETDATA_CONF"
+
+[web]
+  bind port = $PANEL_PORT
+  basic auth login file = $HTPASSWD_FILE
+EOF
     fi
 
-    # حذف خطوط قبلی bind port و basic auth login file در بخش [web]
-    sed -i '/^\[web\]/,/^\[/ { /^bind port =/d; /^basic auth login file =/d }' /etc/netdata/netdata.conf
+    echo "در حال ایجاد فایل htpasswd..."
+    htpasswd -cb "$HTPASSWD_FILE" "$PANEL_USER" "$PANEL_PASS"
+    chmod 640 "$HTPASSWD_FILE"
+    chown netdata:netdata "$HTPASSWD_FILE"
 
-    # اضافه کردن تنظیمات جدید
-    sed -i '/^\[web\]/a bind port = '"$PANEL_PORT" /etc/netdata/netdata.conf
-    sed -i '/^\[web\]/a basic auth login file = /etc/netdata/htpasswd' /etc/netdata/netdata.conf
-
-    htpasswd -cb /etc/netdata/htpasswd $PANEL_USER $PANEL_PASS
-    chmod 640 /etc/netdata/htpasswd
-    chown netdata:netdata /etc/netdata/htpasswd
-
-    systemctl enable netdata
+    echo "راه‌اندازی مجدد Netdata..."
     systemctl restart netdata
 
-    echo "✅ نصب کامل شد."
+    echo "✅ احراز هویت فعال شد و پورت به $PANEL_PORT تغییر یافت."
     echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
     echo "http://IP-Server:$PANEL_PORT"
+}
 
-elif [ "$CHOICE" == "2" ]; then
+function uninstall_netdata() {
     echo "⚠ در حال حذف کامل پنل Netdata..."
     systemctl stop netdata
     apt remove --purge -y netdata
     apt autoremove -y
     rm -rf /etc/netdata
-    rm -f /etc/netdata/htpasswd
+    rm -f "$HTPASSWD_FILE"
     echo "✅ پنل و تمام فایل‌ها حذف شدند."
-else
-    echo "❌ گزینه نامعتبر!"
-fi
+}
+
+case "$CHOICE" in
+    1)
+        install_netdata
+        ;;
+    2)
+        enable_auth_and_port
+        ;;
+    3)
+        uninstall_netdata
+        ;;
+    *)
+        echo "❌ گزینه نامعتبر!"
+        ;;
+esac
