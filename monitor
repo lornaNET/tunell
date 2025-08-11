@@ -1,0 +1,50 @@
+#!/bin/bash
+
+echo "=== نصب پنل مانیتورینگ شبکه روی اوبنتو 22.04 ==="
+
+read -p "یوزرنیم پنل: " PANEL_USER
+read -sp "پسورد پنل: " PANEL_PASS
+echo
+read -p "پورت پنل (مثلاً 8080): " PANEL_PORT
+
+# به‌روزرسانی سیستم
+apt update && apt upgrade -y
+
+# نصب ابزارهای مورد نیاز
+apt install -y vnstat apache2 php php-cli unzip
+
+# فعال‌سازی vnStat
+systemctl enable vnstat
+systemctl start vnstat
+
+# دانلود رابط وب vnStat (vnstat-php)
+cd /var/www/html
+wget https://github.com/bjd/vnstat-php-frontend/archive/master.zip
+unzip master.zip
+mv vnstat-php-frontend-master/* .
+rm -rf vnstat-php-frontend-master master.zip
+
+# ایجاد یوزر و پسورد پنل
+htpasswd -cb /etc/apache2/.htpasswd $PANEL_USER $PANEL_PASS
+
+# تنظیم پورت سفارشی
+sed -i "s/Listen 80/Listen $PANEL_PORT/g" /etc/apache2/ports.conf
+sed -i "s/:80/:$PANEL_PORT/g" /etc/apache2/sites-available/000-default.conf
+
+# فعال‌سازی احراز هویت
+cat <<EOF >/etc/apache2/conf-available/auth.conf
+<Directory "/var/www/html">
+    AuthType Basic
+    AuthName "Login Required"
+    AuthUserFile /etc/apache2/.htpasswd
+    Require valid-user
+</Directory>
+EOF
+a2enconf auth
+
+# راه‌اندازی مجدد Apache
+systemctl restart apache2
+
+echo "✅ نصب کامل شد."
+echo "برای ورود به پنل، آدرس زیر را در مرورگر باز کنید:"
+echo "http://IP-Server:$PANEL_PORT"
