@@ -1,9 +1,9 @@
 #!/bin/bash
 set -e
 echo "=== نصب پنل مانیتورینگ لورنا (Ubuntu 22.04+) ==="
-echo "1) نصب و راه‌اندازی پنل"
-echo "2) حذف پنل"
-read -p "انتخاب (1 یا 2): " CHOICE
+echo "1) نصب و راه‌اندازی"
+echo "2) حذف کامل"
+read -p "انتخاب: " CHOICE
 
 APP_DIR="/opt/lorna"
 VENV_DIR="$APP_DIR/venv"
@@ -20,8 +20,8 @@ DEFAULT_PASSWORD="admin123"
 
 generate_secret_key(){ openssl rand -hex 16; }
 check_port(){ ss -tuln | grep -q ":$1 " && return 1 || return 0; }
-prompt_for_port(){ while true; do read -p "پورت پنل (پیش‌فرض: $APP_PORT): " p; APP_PORT=${p:-$APP_PORT}; [[ ! $APP_PORT =~ ^[0-9]+$ || $APP_PORT -lt 1024 || $APP_PORT -gt 65535 ]] && echo "نامعتبر!" && continue; check_port $APP_PORT && break || echo "پورت در حال استفاده است."; done; }
-prompt_for_xray_port(){ while true; do read -p "پورت Xray (خالی=غیرفعال): " XRAY_PORT; [[ -z "$XRAY_PORT" ]] && break; [[ ! $XRAY_PORT =~ ^[0-9]+$ || $XRAY_PORT -lt 1 || $XRAY_PORT -gt 65535 ]] && echo "نامعتبر!" && continue; check_port $XRAY_PORT && { read -p "هیچ سرویسی روی پورت نیست. ادامه؟ (y/n): " c; [[ $c != "y" ]] && continue; }; break; done; }
+prompt_for_port(){ while true; do read -p "پورت پنل [${APP_PORT}]: " p; APP_PORT=${p:-$APP_PORT}; [[ ! $APP_PORT =~ ^[0-9]+$ ]] && echo "نامعتبر!" && continue; check_port $APP_PORT && break || echo "پورت مشغول است."; done; }
+prompt_for_xray_port(){ while true; do read -p "پورت Xray (خالی=غیرفعال): " XRAY_PORT; [[ -z "$XRAY_PORT" ]] && break; [[ ! $XRAY_PORT =~ ^[0-9]+$ ]] && echo "نامعتبر!" && continue; break; done; }
 
 if [ "$CHOICE" == "1" ]; then
   echo "[*] پاک‌سازی نسخه قبلی..."
@@ -33,100 +33,136 @@ if [ "$CHOICE" == "1" ]; then
   systemctl daemon-reload
 
   echo "[*] بررسی پیش‌نیازها..."
-  command -v python3 >/dev/null || { echo "python3 نصب نیست."; exit 1; }
-  command -v ss >/dev/null || { apt update && apt install -y iproute2; }
+  apt update && apt install -y python3 python3-venv python3-pip iproute2 gunicorn curl
 
   prompt_for_port
   prompt_for_xray_port
 
-  echo "[*] نصب پکیج‌های سیستمی..."
-  apt update && apt install -y python3-venv python3-pip curl gunicorn
-
-  echo "[*] ساخت پوشه‌ها..."
+  echo "[*] ساخت دایرکتوری‌ها..."
   mkdir -p "$APP_DIR" "$LOG_DIR"
-  chown -R "$(whoami)":"$(whoami)" "$LOG_DIR"
-  chmod 750 "$LOG_DIR"
+  echo "$LICENSE_VALUE" > "$LICENSE_FILE"
+  chmod 600 "$LICENSE_FILE"
 
-  echo "$LICENSE_VALUE" > "$LICENSE_FILE"; chmod 600 "$LICENSE_FILE"
-
+  echo "[*] ساخت محیط مجازی..."
   python3 -m venv "$VENV_DIR"
   source "$VENV_DIR/bin/activate"
-  pip install --upgrade pip >/dev/null
-  pip install flask==2.3.3 psutil==5.9.5 gunicorn==21.2.0 >/dev/null
+  pip install --upgrade pip
+  pip install flask==2.3.3 psutil==5.9.5 gunicorn==21.2.0
+
   SECRET_KEY=$(generate_secret_key)
 
-cat > "$APP_DIR/app.py" <<'PYEOF'
+cat > "$APP_DIR/app.py" <<PYEOF
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
 import psutil, os, time, threading, subprocess, logging
 from logging.handlers import RotatingFileHandler
+
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY','key')
-USERNAME = os.environ.get('LORNA_USERNAME','admin')
-PASSWORD = os.environ.get('LORNA_PASSWORD','admin123')
+app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'key')
+
+USERNAME = os.environ.get('LORNA_USERNAME', 'admin')
+PASSWORD = os.environ.get('LORNA_PASSWORD', 'admin123')
 LICENSE_FILE = "/opt/lorna/license.key"
 LOG_DIR = "/var/log/lorna"
-XRAY_PORT = os.environ.get('XRAY_PORT','')
-os.makedirs(LOG_DIR,exist_ok=True)
-h = RotatingFileHandler(f"{LOG_DIR}/lorna.log", maxBytes=10*1024*1024, backupCount=5)
-h.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-app.logger.addHandler(h); app.logger.setLevel(logging.INFO)
-prev_net={'bytes_sent':None,'bytes_recv':None,'time':None}; net_lock=threading.Lock()
-def verify_license(k): return os.path.exists(LICENSE_FILE) and open(LICENSE_FILE).read().strip()==k.strip()
-def net_speed(): 
+XRAY_PORT = os.environ.get('XRAY_PORT', '')
+
+os.makedirs(LOG_DIR, exist_ok=True)
+handler = RotatingFileHandler(f"{LOG_DIR}/lorna.log", maxBytes=10*1024*1024, backupCount=5)
+handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+app.logger.addHandler(handler)
+app.logger.setLevel(logging.INFO)
+
+prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
+net_lock = threading.Lock()
+
+def verify_license(k):
+    return os.path.exists(LICENSE_FILE) and open(LICENSE_FILE).read().strip() == k.strip()
+
+def net_speed():
     with net_lock:
-        c=psutil.net_io_counters(); now=time.time()
-        if prev_net['time'] is None: prev_net.update({'bytes_sent':c.bytes_sent,'bytes_recv':c.bytes_recv,'time':now}); return 0,0
-        dt=now-prev_net['time']; ds,dr=c.bytes_sent-prev_net['bytes_sent'],c.bytes_recv-prev_net['bytes_recv']
-        prev_net.update({'bytes_sent':c.bytes_sent,'bytes_recv':c.bytes_recv,'time':now})
-        return round((ds*8)/(dt*1e6),3), round((dr*8)/(dt*1e6),3)
+        c = psutil.net_io_counters()
+        now = time.time()
+        if prev_net['time'] is None:
+            prev_net.update({'bytes_sent': c.bytes_sent, 'bytes_recv': c.bytes_recv, 'time': now})
+            return 0, 0
+        dt = now - prev_net['time']
+        ds = c.bytes_sent - prev_net['bytes_sent']
+        dr = c.bytes_recv - prev_net['bytes_recv']
+        prev_net.update({'bytes_sent': c.bytes_sent, 'bytes_recv': c.bytes_recv, 'time': now})
+        return round((ds * 8) / (dt * 1e6), 3), round((dr * 8) / (dt * 1e6), 3)
+
 def xray_users():
-    if not XRAY_PORT: return 0,"غیرفعال"
+    if not XRAY_PORT:
+        return 0, "غیرفعال"
     try:
-        cmd=['ss','-tn',f'sport = :{XRAY_PORT}']; res=subprocess.run(cmd,capture_output=True,text=True)
-        if res.returncode!=0: res=subprocess.run(['ss','-tn'],capture_output=True,text=True)
-        cnt=len([l for l in res.stdout.splitlines() if f":{XRAY_PORT}" in l and 'ESTAB' in l])
-        return cnt,"فعال"
-    except: return 0,"خطا"
-login_tpl="<html><body><form method=post>{% if error %}<p>{{error}}</p>{% endif %}<input name=username><input name=password type=password><input name=license><button>ورود</button></form></body></html>"
-dash_tpl="<html><body>{% if not license_ok %}<form method=post action='{{url_for('set_license')}}'><input name=license><button>ثبت</button></form>{% endif %}<p>CPU: {{cpu}}%</p><p>RAM: {{ram}}%</p><p>Up: {{net.upload_mbps}} Mbps</p><p>Down: {{net.download_mbps}} Mbps</p><p>Xray: {{xray_status}}</p><a href='{{url_for('logout')}}'>خروج</a></body></html>"
-@app.route('/',methods=['GET','POST'])
+        cmd = ['ss', '-tn', f'sport = :{XRAY_PORT}']
+        res = subprocess.run(cmd, capture_output=True, text=True)
+        cnt = len([l for l in res.stdout.splitlines() if f":{XRAY_PORT}" in l and 'ESTAB' in l])
+        return cnt, "فعال"
+    except:
+        return 0, "خطا"
+
+login_tpl = "<html><body><form method=post>{% if error %}<p>{{error}}</p>{% endif %}<input name=username><input name=password type=password><input name=license><button>ورود</button></form></body></html>"
+dash_tpl = "<html><body>{% if not license_ok %}<form method=post action='{{url_for('set_license')}}'><input name=license><button>ثبت لایسنس</button></form>{% endif %}<p>CPU: {{cpu}}%</p><p>RAM: {{ram}}%</p><p>Up: {{net.upload_mbps}} Mbps</p><p>Down: {{net.download_mbps}} Mbps</p><p>Xray: {{xray_status}}</p><a href='{{url_for('logout')}}'>خروج</a></body></html>"
+
+@app.route('/', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session: return redirect(url_for('dash'))
-    err=None
-    if request.method=='POST':
-        if request.form['username']==USERNAME and request.form['password']==PASSWORD:
-            session['logged_in']=True; session['license_ok']=verify_license(request.form['license'])
-            return redirect(url_for('dash'))
-        else: err="نام کاربری یا رمز اشتباه"
-    return render_template_string(login_tpl,error=err)
-@app.route('/dashboard'); @app.route('/dash')
-def dash():
-    if 'logged_in' not in session: return redirect(url_for('login'))
-    cpu,ram=psutil.cpu_percent(0.1),psutil.virtual_memory().percent
-    up,down=net_speed(); xu,xs=xray_users()
-    return render_template_string(dash_tpl,cpu=cpu,ram=ram,net={'upload_mbps':up,'download_mbps':down},license_ok=session.get('license_ok',False),xray_status=xs)
-@app.route('/set_license',methods=['POST'])
+    if 'logged_in' in session:
+        return redirect(url_for('dashboard'))
+    error = None
+    if request.method == 'POST':
+        if request.form['username'] == USERNAME and request.form['password'] == PASSWORD:
+            session['logged_in'] = True
+            session['license_ok'] = verify_license(request.form['license'])
+            return redirect(url_for('dashboard'))
+        else:
+            error = "نام کاربری یا رمز اشتباه"
+    return render_template_string(login_tpl, error=error)
+
+@app.route('/dashboard')
+@app.route('/dash')
+def dashboard():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    cpu = psutil.cpu_percent(0.1)
+    ram = psutil.virtual_memory().percent
+    up, down = net_speed()
+    xu, xs = xray_users()
+    return render_template_string(dash_tpl, cpu=cpu, ram=ram, net={'upload_mbps': up, 'download_mbps': down}, license_ok=session.get('license_ok', False), xray_status=xs)
+
+@app.route('/set_license', methods=['POST'])
 def set_license():
-    if 'logged_in' not in session: return redirect(url_for('login'))
-    session['license_ok']=verify_license(request.form['license']); return redirect(url_for('dash'))
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    session['license_ok'] = verify_license(request.form['license'])
+    return redirect(url_for('dashboard'))
+
 @app.route('/get_system_data')
-def data():
-    if 'logged_in' not in session: return jsonify({'error':'Unauthorized'}),401
-    cpu,ram=psutil.cpu_percent(0.1),psutil.virtual_memory().percent
-    up,down=net_speed(); xu,_=xray_users()
-    return jsonify({'cpu':cpu,'ram':ram,'net':{'upload_mbps':up,'download_mbps':down},'xray':{'users':xu}})
+def get_system_data():
+    if 'logged_in' not in session:
+        return jsonify({'error': 'Unauthorized'}), 401
+    cpu = psutil.cpu_percent(0.1)
+    ram = psutil.virtual_memory().percent
+    up, down = net_speed()
+    xu, _ = xray_users()
+    return jsonify({'cpu': cpu, 'ram': ram, 'net': {'upload_mbps': up, 'download_mbps': down}, 'xray': {'users': xu}})
+
 @app.route('/logout')
-def logout(): session.clear(); return redirect(url_for('login'))
-if __name__=="__main__": app.run(host='0.0.0.0',port=int(os.environ.get('PORT',5000)))
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+if __name__ == "__main__":
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 PYEOF
 
   sed -i "s/key/$SECRET_KEY/" "$APP_DIR/app.py"
 
-  echo "[*] تنظیم سرویس systemd..."
+  echo "[*] ساخت سرویس systemd..."
 cat > "$SYSTEMD_FILE" <<EOF
 [Unit]
 Description=Lorna Monitoring Panel
 After=network.target
+
 [Service]
 User=$(whoami)
 WorkingDirectory=$APP_DIR
@@ -137,6 +173,7 @@ Environment="XRAY_PORT=$XRAY_PORT"
 Environment="PORT=$APP_PORT"
 ExecStart=$VENV_DIR/bin/gunicorn --workers $GUNICORN_WORKERS --bind 0.0.0.0:$APP_PORT app:app
 Restart=always
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -145,21 +182,19 @@ EOF
   systemctl enable "$SERVICE_NAME"
   systemctl start "$SERVICE_NAME"
 
-  echo "پنل اجرا شد: http://<IP>:$APP_PORT"
-  echo "یوزر/پس: $DEFAULT_USERNAME/$DEFAULT_PASSWORD | لایسنس: $LICENSE_VALUE"
-  echo "اجرای مستقیم تست: source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
-  [ -n "$XRAY_PORT" ] && echo "Xray مانیتور روی پورت: $XRAY_PORT"
-  echo "لاگ‌ها: $LOG_DIR/lorna.log"
+  echo "✅ نصب کامل شد"
+  echo "📌 آدرس: http://<IP>:$APP_PORT"
+  echo "👤 $DEFAULT_USERNAME / 🔑 $DEFAULT_PASSWORD"
+  echo "📄 لایسنس: $LICENSE_VALUE"
+  echo "▶ تست دستی: source $VENV_DIR/bin/activate && python $APP_DIR/app.py"
 
 elif [ "$CHOICE" == "2" ]; then
-  echo "[*] حذف پنل..."
+  echo "[*] حذف کامل..."
   systemctl stop "$SERVICE_NAME" 2>/dev/null || true
   systemctl disable "$SERVICE_NAME" 2>/dev/null || true
   rm -f "$SYSTEMD_FILE"
   systemctl daemon-reload
   pkill -f "gunicorn.*app:app" 2>/dev/null || true
   rm -rf "$APP_DIR" "$LOG_DIR"
-  echo "[+] حذف انجام شد."
-else
-  echo "گزینه نامعتبر."; exit 1
+  echo "✅ حذف انجام شد"
 fi
