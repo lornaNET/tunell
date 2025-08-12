@@ -1,187 +1,401 @@
-from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify, session
-from flask_sqlalchemy import SQLAlchemy
-from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-import psutil
-import os
+#!/bin/bash
+set -e
+
+echo "=== نصب پنل مانیتورینگ لورنا (Ubuntu 22.04+) ==="
+echo "1) نصب و راه‌اندازی پنل"
+echo "2) حذف پنل"
+read -p "انتخاب (1 یا 2): " CHOICE
+
+APP_DIR="/opt/network_monitor"
+VENV_DIR="$APP_DIR/venv"
+APP_PORT=5000
+LICENSE_FILE="$APP_DIR/license.key"
+LICENSE_VALUE="lorna"
+SECRET_KEY=$(openssl rand -hex 16)  # تولید کلید مخفی تصادفی
+
+if [ "$CHOICE" == "1" ]; then
+    echo "[*] نصب بسته‌های سیستمی..."
+    apt update
+    apt install -y python3 python3-venv python3-pip curl
+
+    echo "[*] ایجاد پوشه برنامه..."
+    mkdir -p "$APP_DIR"
+    echo "$LICENSE_VALUE" > "$LICENSE_FILE"
+    chmod 600 "$LICENSE_FILE"
+
+    echo "[*] ساخت محیط مجازی پایتون..."
+    python3 -m venv "$VENV_DIR"
+    source "$VENV_DIR/bin/activate"
+
+    echo "[*] نصب پکیج‌های پایتونی..."
+    pip install --upgrade pip >/dev/null
+    pip install flask psutil flask-babel bcrypt >/dev/null
+
+    echo "[*] ایجاد فایل‌های ترجمه..."
+    mkdir -p "$APP_DIR/translations/fa/LC_MESSAGES"
+    mkdir -p "$APP_DIR/translations/en/LC_MESSAGES"
+    mkdir -p "$APP_DIR/translations/zh/LC_MESSAGES"
+
+    # فایل ترجمه فارسی
+    cat > "$APP_DIR/translations/fa/LC_MESSAGES/messages.po" << 'POEOF'
+msgid "Login to Panel"
+msgstr "ورود به پنل"
+
+msgid "Username"
+msgstr "نام کاربری"
+
+msgid "Password"
+msgstr "رمز عبور"
+
+msgid "License Code"
+msgstr "کد لایسنس"
+
+msgid "Login"
+msgstr "ورود"
+
+msgid "Default username/password"
+msgstr "نام کاربری/رمز پیش‌فرض"
+
+msgid "Invalid username or password"
+msgstr "نام کاربری یا رمز عبور اشتباه است"
+
+msgid "Invalid license code"
+msgstr "کد لایسنس نامعتبر است"
+
+msgid "Dashboard"
+msgstr "داشبورد"
+
+msgid "System Status"
+msgstr "وضعیت سیستم"
+
+msgid "License Status"
+msgstr "وضعیت لایسنس"
+
+msgid "Valid"
+msgstr "معتبر"
+
+msgid "Invalid"
+msgstr "نامعتبر"
+
+msgid "Version"
+msgstr "نسخه"
+
+msgid "Settings"
+msgstr "تنظیمات"
+
+msgid "Theme"
+msgstr "تم"
+
+msgid "Dark"
+msgstr "تیره"
+
+msgid "Light"
+msgstr "روشن"
+
+msgid "AMOLED"
+msgstr "AMOLED"
+
+msgid "Link Max (Mbps)"
+msgstr "حداکثر لینک (Mbps)"
+
+msgid "Save"
+msgstr "ذخیره"
+
+msgid "Commands"
+msgstr "دستورات"
+
+msgid "For manual execution"
+msgstr "برای اجرای دستی"
+
+msgid "Logout"
+msgstr "خروج"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "RAM"
+msgstr "RAM"
+
+msgid "Upload"
+msgstr "آپلود"
+
+msgid "Download"
+msgstr "دانلود"
+
+msgid "Language"
+msgstr "زبان"
+
+msgid "Persian"
+msgstr "فارسی"
+
+msgid "English"
+msgstr "انگلیسی"
+
+msgid "Chinese"
+msgstr "چینی"
+
+msgid "Saved"
+msgstr "ذخیره شد"
+
+msgid "Export Report"
+msgstr "صدور گزارش"
+
+msgid "Network Speed"
+msgstr "سرعت شبکه"
+
+msgid "Refresh"
+msgstr "رفرش"
+POEOF
+
+    # فایل ترجمه انگلیسی
+    cat > "$APP_DIR/translations/en/LC_MESSAGES/messages.po" << 'POEOF'
+msgid "Login to Panel"
+msgstr "Login to Panel"
+
+msgid "Username"
+msgstr "Username"
+
+msgid "Password"
+msgstr "Password"
+
+msgid "License Code"
+msgstr "License Code"
+
+msgid "Login"
+msgstr "Login"
+
+msgid "Default username/password"
+msgstr "Default username/password"
+
+msgid "Invalid username or password"
+msgstr "Invalid username or password"
+
+msgid "Invalid license code"
+msgstr "Invalid license code"
+
+msgid "Dashboard"
+msgstr "Dashboard"
+
+msgid "System Status"
+msgstr "System Status"
+
+msgid "License Status"
+msgstr "License Status"
+
+msgid "Valid"
+msgstr "Valid"
+
+msgid "Invalid"
+msgstr "Invalid"
+
+msgid "Version"
+msgstr "Version"
+
+msgid "Settings"
+msgstr "Settings"
+
+msgid "Theme"
+msgstr "Theme"
+
+msgid "Dark"
+msgstr "Dark"
+
+msgid "Light"
+msgstr "Light"
+
+msgid "AMOLED"
+msgstr "AMOLED"
+
+msgid "Link Max (Mbps)"
+msgstr "Link Max (Mbps)"
+
+msgid "Save"
+msgstr "Save"
+
+msgid "Commands"
+msgstr "Commands"
+
+msgid "For manual execution"
+msgstr "For manual execution"
+
+msgid "Logout"
+msgstr "Logout"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "RAM"
+msgstr "RAM"
+
+msgid "Upload"
+msgstr "Upload"
+
+msgid "Download"
+msgstr "Download"
+
+msgid "Language"
+msgstr "Language"
+
+msgid "Persian"
+msgstr "Persian"
+
+msgid "English"
+msgstr "English"
+
+msgid "Chinese"
+msgstr "Chinese"
+
+msgid "Saved"
+msgstr "Saved"
+
+msgid "Export Report"
+msgstr "Export Report"
+
+msgid "Network Speed"
+msgstr "Network Speed"
+
+msgid "Refresh"
+msgstr "Refresh"
+POEOF
+
+    # فایل ترجمه چینی
+    cat > "$APP_DIR/translations/zh/LC_MESSAGES/messages.po" << 'POEOF'
+msgid "Login to Panel"
+msgstr "登录面板"
+
+msgid "Username"
+msgstr "用户名"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "License Code"
+msgstr "许可证代码"
+
+msgid "Login"
+msgstr "登录"
+
+msgid "Default username/password"
+msgstr "默认用户名/密码"
+
+msgid "Invalid username or password"
+msgstr "用户名或密码错误"
+
+msgid "Invalid license code"
+msgstr "许可证代码无效"
+
+msgid "Dashboard"
+msgstr "仪表板"
+
+msgid "System Status"
+msgstr "系统状态"
+
+msgid "License Status"
+msgstr "许可证状态"
+
+msgid "Valid"
+msgstr "有效"
+
+msgid "Invalid"
+msgstr "无效"
+
+msgid "Version"
+msgstr "版本"
+
+msgid "Settings"
+msgstr "设置"
+
+msgid "Theme"
+msgstr "主题"
+
+msgid "Dark"
+msgstr "暗色"
+
+msgid "Light"
+msgstr "亮色"
+
+msgid "AMOLED"
+msgstr "AMOLED"
+
+msgid "Link Max (Mbps)"
+msgstr "最大链接速度 (Mbps)"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Commands"
+msgstr "命令"
+
+msgid "For manual execution"
+msgstr "用于手动执行"
+
+msgid "Logout"
+msgstr "退出"
+
+msgid "CPU"
+msgstr "CPU"
+
+msgid "RAM"
+msgstr "内存"
+
+msgid "Upload"
+msgstr "上传"
+
+msgid "Download"
+msgstr "下载"
+
+msgid "Language"
+msgstr "语言"
+
+msgid "Persian"
+msgstr "波斯语"
+
+msgid "English"
+msgstr "英语"
+
+msgid "Chinese"
+msgstr "中文"
+
+msgid "Saved"
+msgstr "已保存"
+
+msgid "Export Report"
+msgstr "导出报告"
+
+msgid "Network Speed"
+msgstr "网络速度"
+
+msgid "Refresh"
+msgstr "刷新"
+POEOF
+
+    echo "[*] کامپایل فایل‌های ترجمه..."
+    pip install pybabel >/dev/null
+    pybabel compile -d "$APP_DIR/translations"
+
+    echo "[*] ایجاد فایل برنامه Flask..."
+    cat > "$APP_DIR/app.py" << 'PYEOF'
+from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+from flask_babel import Babel, gettext
+import psutil, os, time, threading, bcrypt, csv, io
+from datetime import datetime
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key'
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['ADMIN_USERNAME'] = 'admin'
+app.secret_key = os.environ.get('SECRET_KEY', 'YOUR_RANDOM_SECRET_KEY')  # از متغیر محیطی یا مقدار پیش‌فرض
+babel = Babel(app)
 
-db = SQLAlchemy(app)
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
+USERNAME = "admin"
+PASSWORD_HASH = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt())  # هش کردن رمز عبور
+LICENSE_FILE = "/opt/network_monitor/license.key"
 
-# مدل کاربر
-class User(UserMixin, db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(150), unique=True)
-    password_hash = db.Column(db.String(200))
+# متغیرهای برای محاسبه سرعت شبکه (thread-safe)
+prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
+net_lock = threading.Lock()
+history_data = {'cpu': [], 'ram': [], 'upload': [], 'download': [], 'times': []}  # برای تاریخچه
 
-    def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
+# تنظیمات زبان
+@babel.localeselector
+def get_locale():
+    return session.get('lang', request.accept_languages.best_match(['fa', 'en', 'zh'], default='fa'))
 
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.query.get(int(user_id))
-
-# ایجاد دیتابیس و کاربر اولیه قبل از اولین درخواست
-@app.before_first_request
-def create_user():
-    db.create_all()
-    if not User.query.filter_by(username=app.config['ADMIN_USERNAME']).first():
-        admin = User(username=app.config['ADMIN_USERNAME'])
-        admin.set_password('admin123')  # پسورد اولیه رو بعدا تغییر بده
-        db.session.add(admin)
-        db.session.commit()
-
-def get_system_stats():
-    cpu_percent = psutil.cpu_percent(interval=1)
-    ram = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    net = psutil.net_io_counters()
-    return {
-        'cpu_percent': cpu_percent,
-        'ram_total': ram.total,
-        'ram_used': ram.used,
-        'ram_percent': ram.percent,
-        'disk_total': disk.total,
-        'disk_used': disk.used,
-        'disk_percent': disk.percent,
-        'net_bytes_sent': net.bytes_sent,
-        'net_bytes_recv': net.bytes_recv,
-    }
-
-# قالب‌ها به صورت رشته (برای یک فایل بودن)
-login_html = '''
-<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>ورود به پنل مانیتورینگ</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-</head>
-<body class="bg-light d-flex justify-content-center align-items-center vh-100">
-  <div class="card p-4 shadow" style="width: 350px;">
-    <h3 class="mb-4 text-center">ورود</h3>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        {% for category, msg in messages %}
-          <div class="alert alert-{{category}}">{{msg}}</div>
-        {% endfor %}
-      {% endif %}
-    {% endwith %}
-    <form method="post">
-      <div class="mb-3">
-        <label for="username" class="form-label">نام کاربری</label>
-        <input type="text" class="form-control" id="username" name="username" required autofocus />
-      </div>
-      <div class="mb-3">
-        <label for="password" class="form-label">رمز عبور</label>
-        <input type="password" class="form-control" id="password" name="password" required />
-      </div>
-      <button type="submit" class="btn btn-primary w-100">ورود</button>
-    </form>
-  </div>
-</body>
-</html>
-'''
-
-index_html = '''
-<!DOCTYPE html>
-<html lang="fa" dir="rtl">
-<head>
-  <meta charset="UTF-8" />
-  <title>پنل مانیتورینگ سیستم</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
-  <style>
-    body {
-      padding: 20px;
-      background-color: #f8f9fa;
-    }
-    .stat-box {
-      padding: 20px;
-      background: white;
-      border-radius: 8px;
-      box-shadow: 0 0 10px rgb(0 0 0 / 0.1);
-      margin-bottom: 20px;
-    }
-  </style>
-</head>
-<body>
-  <nav class="navbar navbar-expand-lg navbar-light bg-white mb-4 shadow-sm">
-    <div class="container-fluid">
-      <a class="navbar-brand" href="#">پنل مانیتورینگ</a>
-      <div class="d-flex align-items-center">
-        <span class="me-3">سلام، {{ user.username }}</span>
-        <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">خروج</a>
-      </div>
-    </div>
-  </nav>
-  
-  <div class="container">
-    <div class="row g-3">
-      <div class="col-md-3 stat-box text-center">
-        <h5>درصد استفاده CPU</h5>
-        <h2>{{ stats.cpu_percent }}%</h2>
-      </div>
-      <div class="col-md-3 stat-box text-center">
-        <h5>رم استفاده شده</h5>
-        <h2>{{ (stats.ram_used / (1024**3))|round(2) }} GB</h2>
-        <small>از {{ (stats.ram_total / (1024**3))|round(2) }} GB</small>
-      </div>
-      <div class="col-md-3 stat-box text-center">
-        <h5>فضای دیسک استفاده شده</h5>
-        <h2>{{ (stats.disk_used / (1024**3))|round(2) }} GB</h2>
-        <small>از {{ (stats.disk_total / (1024**3))|round(2) }} GB</small>
-      </div>
-      <div class="col-md-3 stat-box text-center">
-        <h5>ترافیک شبکه</h5>
-        <h6>ارسال: {{ (stats.net_bytes_sent / (1024**2))|round(2) }} MB</h6>
-        <h6>دریافت: {{ (stats.net_bytes_recv / (1024**2))|round(2) }} MB</h6>
-      </div>
-    </div>
-  </div>
-</body>
-</html>
-'''
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form['username']
-        password = request.form['password']
-        user = User.query.filter_by(username=username).first()
-        if user and user.check_password(password):
-            login_user(user)
-            return redirect(url_for('dashboard'))
-        else:
-            flash('نام کاربری یا رمز عبور اشتباه است.', 'danger')
-    return render_template_string(login_html)
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    flash('خروج با موفقیت انجام شد.', 'success')
-    return redirect(url_for('login'))
-
-@app.route('/')
-@login_required
-def dashboard():
-    stats = get_system_stats()
-    return render_template_string(index_html, stats=stats, user=current_user)
-
-@app.route('/api/stats')
-@login_required
-def api_stats():
-    return jsonify(get_system_stats())
-
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+def
