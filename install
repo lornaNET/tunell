@@ -1,338 +1,187 @@
-#!/bin/bash
-set -e
-echo "=== نصب پنل مانیتورینگ لورنا (نسخه خفن و گرافیکی) ==="
-echo "1) نصب و راه‌اندازی"
-echo "2) حذف کامل"
-read -p "انتخاب: " CHOICE
-
-APP_DIR="/opt/lorna"
-VENV_DIR="$APP_DIR/venv"
-APP_PORT=5000
-LICENSE_FILE="$APP_DIR/license.key"
-LICENSE_VALUE="lorna"
-SERVICE_NAME="lorna-monitor"
-SYSTEMD_FILE="/etc/systemd/system/$SERVICE_NAME.service"
-GUNICORN_WORKERS=3
-XRAY_PORT=""
-LOG_DIR="/var/log/lorna"
-DEFAULT_USERNAME="admin"
-DEFAULT_PASSWORD="admin123"
-
-generate_secret_key(){ openssl rand -hex 16; }
-check_port(){ ss -tuln | grep -q ":$1 " && return 1 || return 0; }
-prompt_for_port(){ 
-  while true; do 
-    read -p "پورت پنل [${APP_PORT}]: " p
-    APP_PORT=${p:-$APP_PORT}
-    if ! [[ $APP_PORT =~ ^[0-9]+$ ]]; then
-      echo "نامعتبر!"
-      continue
-    fi
-    check_port $APP_PORT && break || echo "پورت مشغول است."
-  done
-}
-prompt_for_xray_port(){ 
-  while true; do 
-    read -p "پورت Xray (خالی=غیرفعال): " XRAY_PORT
-    if [[ -z "$XRAY_PORT" ]]; then
-      break
-    fi
-    if ! [[ $XRAY_PORT =~ ^[0-9]+$ ]]; then
-      echo "نامعتبر!"
-      continue
-    fi
-    break
-  done
-}
-
-if [ "$CHOICE" == "1" ]; then
-  echo "[*] پاک‌سازی نسخه قبلی..."
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-  rm -f "$SYSTEMD_FILE"
-  pkill -f "gunicorn.*app:app" 2>/dev/null || true
-  rm -rf "$APP_DIR" "$LOG_DIR"
-  systemctl daemon-reload
-
-  echo "[*] بررسی پیش‌نیازها..."
-  apt update && apt install -y python3 python3-venv python3-pip iproute2 gunicorn curl openssl
-
-  prompt_for_port
-  prompt_for_xray_port
-
-  echo "[*] ساخت دایرکتوری‌ها..."
-  mkdir -p "$APP_DIR" "$LOG_DIR"
-  echo "$LICENSE_VALUE" > "$LICENSE_FILE"
-  chmod 600 "$LICENSE_FILE"
-
-  echo "[*] ساخت محیط مجازی..."
-  python3 -m venv "$VENV_DIR"
-  source "$VENV_DIR/bin/activate"
-  pip install --upgrade pip
-  pip install flask==2.3.3 psutil==5.9.5 gunicorn==21.2.0
-
-  SECRET_KEY=$(generate_secret_key)
-
-  echo "[*] ایجاد فایل app.py..."
-cat > "$APP_DIR/app.py" <<PYEOF
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
-import psutil, os, time, threading, subprocess
-from logging.handlers import RotatingFileHandler
-import logging
+from flask import Flask, render_template_string, request, redirect, url_for, flash, jsonify, session
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+import psutil
+import os
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', '$SECRET_KEY')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY') or 'your-secret-key'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['ADMIN_USERNAME'] = 'admin'
 
-USERNAME = os.environ.get('LORNA_USERNAME', '$DEFAULT_USERNAME')
-PASSWORD = os.environ.get('LORNA_PASSWORD', '$DEFAULT_PASSWORD')
-LICENSE_FILE = "$LICENSE_FILE"
-LOG_DIR = "$LOG_DIR"
-XRAY_PORT = os.environ.get('XRAY_PORT', '$XRAY_PORT')
+db = SQLAlchemy(app)
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
 
-os.makedirs(LOG_DIR, exist_ok=True)
-handler = RotatingFileHandler(f"{LOG_DIR}/lorna.log", maxBytes=10*1024*1024, backupCount=5)
-handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-app.logger.addHandler(handler)
-app.logger.setLevel(logging.INFO)
+# مدل کاربر
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), unique=True)
+    password_hash = db.Column(db.String(200))
 
-prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
-net_lock = threading.Lock()
+    def set_password(self, password):
+        self.password_hash = generate_password_hash(password)
 
-def verify_license(k):
-    try:
-        return os.path.exists(LICENSE_FILE) and open(LICENSE_FILE).read().strip() == k.strip()
-    except Exception as e:
-        app.logger.error(f"License check error: {e}")
-        return False
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
 
-def net_speed():
-    with net_lock:
-        c = psutil.net_io_counters()
-        now = time.time()
-        if prev_net['time'] is None:
-            prev_net.update({'bytes_sent': c.bytes_sent, 'bytes_recv': c.bytes_recv, 'time': now})
-            return 0, 0
-        dt = now - prev_net['time']
-        if dt == 0:
-            return 0, 0
-        ds = c.bytes_sent - prev_net['bytes_sent']
-        dr = c.bytes_recv - prev_net['bytes_recv']
-        prev_net.update({'bytes_sent': c.bytes_sent, 'bytes_recv': c.bytes_recv, 'time': now})
-        upload_mbps = round((ds * 8) / (dt * 1e6), 2)
-        download_mbps = round((dr * 8) / (dt * 1e6), 2)
-        return upload_mbps, download_mbps
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
 
-def xray_users():
-    if not XRAY_PORT:
-        return 0, "غیرفعال"
-    try:
-        cmd = ['ss', '-tn', f'sport = :{XRAY_PORT}']
-        res = subprocess.run(cmd, capture_output=True, text=True)
-        cnt = len([l for l in res.stdout.splitlines() if f":{XRAY_PORT}" in l and 'ESTAB' in l])
-        return cnt, "فعال"
-    except Exception as e:
-        app.logger.error(f"Xray users check error: {e}")
-        return 0, "خطا"
+# ایجاد دیتابیس و کاربر اولیه قبل از اولین درخواست
+@app.before_first_request
+def create_user():
+    db.create_all()
+    if not User.query.filter_by(username=app.config['ADMIN_USERNAME']).first():
+        admin = User(username=app.config['ADMIN_USERNAME'])
+        admin.set_password('admin123')  # پسورد اولیه رو بعدا تغییر بده
+        db.session.add(admin)
+        db.session.commit()
+
+def get_system_stats():
+    cpu_percent = psutil.cpu_percent(interval=1)
+    ram = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    net = psutil.net_io_counters()
+    return {
+        'cpu_percent': cpu_percent,
+        'ram_total': ram.total,
+        'ram_used': ram.used,
+        'ram_percent': ram.percent,
+        'disk_total': disk.total,
+        'disk_used': disk.used,
+        'disk_percent': disk.percent,
+        'net_bytes_sent': net.bytes_sent,
+        'net_bytes_recv': net.bytes_recv,
+    }
+
+# قالب‌ها به صورت رشته (برای یک فایل بودن)
+login_html = '''
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>ورود به پنل مانیتورینگ</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+</head>
+<body class="bg-light d-flex justify-content-center align-items-center vh-100">
+  <div class="card p-4 shadow" style="width: 350px;">
+    <h3 class="mb-4 text-center">ورود</h3>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{category}}">{{msg}}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+    <form method="post">
+      <div class="mb-3">
+        <label for="username" class="form-label">نام کاربری</label>
+        <input type="text" class="form-control" id="username" name="username" required autofocus />
+      </div>
+      <div class="mb-3">
+        <label for="password" class="form-label">رمز عبور</label>
+        <input type="password" class="form-control" id="password" name="password" required />
+      </div>
+      <button type="submit" class="btn btn-primary w-100">ورود</button>
+    </form>
+  </div>
+</body>
+</html>
+'''
+
+index_html = '''
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <title>پنل مانیتورینگ سیستم</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet" />
+  <style>
+    body {
+      padding: 20px;
+      background-color: #f8f9fa;
+    }
+    .stat-box {
+      padding: 20px;
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 0 10px rgb(0 0 0 / 0.1);
+      margin-bottom: 20px;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-light bg-white mb-4 shadow-sm">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="#">پنل مانیتورینگ</a>
+      <div class="d-flex align-items-center">
+        <span class="me-3">سلام، {{ user.username }}</span>
+        <a href="{{ url_for('logout') }}" class="btn btn-outline-danger btn-sm">خروج</a>
+      </div>
+    </div>
+  </nav>
+  
+  <div class="container">
+    <div class="row g-3">
+      <div class="col-md-3 stat-box text-center">
+        <h5>درصد استفاده CPU</h5>
+        <h2>{{ stats.cpu_percent }}%</h2>
+      </div>
+      <div class="col-md-3 stat-box text-center">
+        <h5>رم استفاده شده</h5>
+        <h2>{{ (stats.ram_used / (1024**3))|round(2) }} GB</h2>
+        <small>از {{ (stats.ram_total / (1024**3))|round(2) }} GB</small>
+      </div>
+      <div class="col-md-3 stat-box text-center">
+        <h5>فضای دیسک استفاده شده</h5>
+        <h2>{{ (stats.disk_used / (1024**3))|round(2) }} GB</h2>
+        <small>از {{ (stats.disk_total / (1024**3))|round(2) }} GB</small>
+      </div>
+      <div class="col-md-3 stat-box text-center">
+        <h5>ترافیک شبکه</h5>
+        <h6>ارسال: {{ (stats.net_bytes_sent / (1024**2))|round(2) }} MB</h6>
+        <h6>دریافت: {{ (stats.net_bytes_recv / (1024**2))|round(2) }} MB</h6>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+'''
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session and session['logged_in']:
-        return redirect(url_for('dashboard'))
-    error = None
     if request.method == 'POST':
-        if request.form.get('username') == USERNAME and request.form.get('password') == PASSWORD:
-            session['logged_in'] = True
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and user.check_password(password):
+            login_user(user)
             return redirect(url_for('dashboard'))
         else:
-            error = "نام کاربری یا رمز عبور اشتباه است."
-    return render_template_string(\"\"\"
-<!doctype html>
-<html lang="fa" dir="rtl">
-<head><meta charset="utf-8"><title>ورود به لورنا</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-<style>body {background:#f8fafc;display:flex;justify-content:center;align-items:center;height:100vh;} .login-box {width:350px;padding:20px;background:#fff;border-radius:8px;box-shadow:0 0 10px rgba(0,0,0,0.1);}</style>
-</head>
-<body>
-<div class="login-box">
-  <h3 class="mb-4 text-center">ورود به لورنا</h3>
-  {% if error %}
-  <div class="alert alert-danger">{{error}}</div>
-  {% endif %}
-  <form method="post">
-    <div class="mb-3">
-      <label class="form-label">نام کاربری</label>
-      <input type="text" name="username" class="form-control" required autofocus>
-    </div>
-    <div class="mb-3">
-      <label class="form-label">رمز عبور</label>
-      <input type="password" name="password" class="form-control" required>
-    </div>
-    <button type="submit" class="btn btn-primary w-100">ورود</button>
-  </form>
-</div>
-</body>
-</html>
-\"\"\", error=error)
+            flash('نام کاربری یا رمز عبور اشتباه است.', 'danger')
+    return render_template_string(login_html)
 
 @app.route('/logout')
+@login_required
 def logout():
-    session.clear()
+    logout_user()
+    flash('خروج با موفقیت انجام شد.', 'success')
     return redirect(url_for('login'))
 
 @app.route('/')
+@login_required
 def dashboard():
-    if 'logged_in' not in session or not session['logged_in']:
-        return redirect(url_for('login'))
-    license_ok = verify_license(LICENSE_VALUE)
-    return render_template_string(\"\"\"
-<!doctype html>
-<html lang="fa" dir="rtl">
-<head>
-<meta charset="utf-8">
-<title>داشبورد لورنا</title>
-<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" rel="stylesheet">
-<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-body { background-color: #f8fafc; }
-.card { box-shadow: 0 0 10px rgba(0,0,0,0.05); }
-</style>
-</head>
-<body>
-<nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
-  <div class="container-fluid">
-    <span class="navbar-brand"><i class="fa-solid fa-gauge-high"></i> لورنا مانیتورینگ</span>
-    <div>
-      <a href="{{url_for('logout')}}" class="btn btn-danger btn-sm">خروج</a>
-    </div>
-  </div>
-</nav>
-<div class="container">
-  {% if not license_ok %}
-  <div class="alert alert-warning">
-    لایسنس ثبت نشده است.
-    <form method="post" action="{{url_for('set_license')}}" class="d-inline">
-      <input name="license" placeholder="کد لایسنس">
-      <button class="btn btn-sm btn-success">ثبت</button>
-    </form>
-  </div>
-  {% endif %}
-  <div class="row mb-4">
-    <div class="col-md-3"><div class="card text-center"><div class="card-body"><i class="fa-solid fa-upload fa-2x"></i><h5>آپلود</h5><p id="up">-- Mbps</p></div></div></div>
-    <div class="col-md-3"><div class="card text-center"><div class="card-body"><i class="fa-solid fa-download fa-2x"></i><h5>دانلود</h5><p id="down">-- Mbps</p></div></div></div>
-    <div class="col-md-3"><div class="card text-center"><div class="card-body"><i class="fa-solid fa-link fa-2x"></i><h5>Xray</h5><p id="xray">--</p></div></div></div>
-  </div>
-  <div class="row">
-    <div class="col-md-6"><canvas id="cpuChart"></canvas></div>
-    <div class="col-md-6"><canvas id="ramChart"></canvas></div>
-  </div>
-</div>
-<script>
-let cpuData = [];
-let ramData = [];
-let labels = [];
-const cpuChart = new Chart(document.getElementById('cpuChart'), {
-  type: 'line',
-  data: { labels: labels, datasets: [{ label: 'CPU %', data: cpuData, borderColor: 'red', fill: false }] }
-});
-const ramChart = new Chart(document.getElementById('ramChart'), {
-  type: 'line',
-  data: { labels: labels, datasets: [{ label: 'RAM %', data: ramData, borderColor: 'blue', fill: false }] }
-});
-function loadStats(){
-  $.getJSON('/get_system_data', function(data){
-    $("#up").text(data.net.upload_mbps + " Mbps");
-    $("#down").text(data.net.download_mbps + " Mbps");
-    $("#xray").text(data.xray.users + " کاربر");
-    const time = new Date().toLocaleTimeString();
-    labels.push(time);
-    cpuData.push(data.cpu);
-    ramData.push(data.ram);
-    if(labels.length > 10){ labels.shift(); cpuData.shift(); ramData.shift(); }
-    cpuChart.update();
-    ramChart.update();
-  });
-}
-setInterval(loadStats, 3000);
-loadStats();
-</script>
-</body>
-</html>
-\"\"\", license_ok=license_ok)
+    stats = get_system_stats()
+    return render_template_string(index_html, stats=stats, user=current_user)
 
-@app.route('/set_license', methods=['POST'])
-def set_license():
-    if 'logged_in' not in session or not session['logged_in']:
-        return redirect(url_for('login'))
-    new_key = request.form.get('license', '').strip()
-    if new_key:
-        try:
-            with open(LICENSE_FILE, 'w') as f:
-                f.write(new_key)
-            app.logger.info("لایسنس جدید ثبت شد.")
-        except Exception as e:
-            app.logger.error(f"خطا در ثبت لایسنس: {e}")
-    return redirect(url_for('dashboard'))
-
-@app.route('/get_system_data')
-def get_system_data():
-    if 'logged_in' not in session or not session['logged_in']:
-        return jsonify({"error": "not logged in"}), 401
-    cpu = psutil.cpu_percent(interval=None)
-    ram = psutil.virtual_memory().percent
-    up, down = net_speed()
-    xcount, xstate = xray_users()
-    return jsonify({
-        "cpu": cpu,
-        "ram": ram,
-        "net": {"upload_mbps": up, "download_mbps": down},
-        "xray": {"users": xcount, "state": xstate}
-    })
+@app.route('/api/stats')
+@login_required
+def api_stats():
+    return jsonify(get_system_stats())
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', '5000')))
-PYEOF
-
-  echo "[*] ساخت سرویس systemd..."
-cat > "$SYSTEMD_FILE" <<EOF
-[Unit]
-Description=Lorna Monitoring Panel
-After=network.target
-
-[Service]
-User=$(whoami)
-WorkingDirectory=$APP_DIR
-Environment="FLASK_SECRET_KEY=$SECRET_KEY"
-Environment="LORNA_USERNAME=$DEFAULT_USERNAME"
-Environment="LORNA_PASSWORD=$DEFAULT_PASSWORD"
-Environment="XRAY_PORT=$XRAY_PORT"
-Environment="PORT=$APP_PORT"
-ExecStart=$VENV_DIR/bin/gunicorn --workers $GUNICORN_WORKERS --bind 0.0.0.0:$APP_PORT app:app
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-  systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME"
-  systemctl start "$SERVICE_NAME"
-
-  echo "✅ نصب کامل شد"
-  echo "📌 آدرس: http://$(hostname -I | awk '{print $1}'):$APP_PORT"
-  echo "👤 $DEFAULT_USERNAME / 🔑 $DEFAULT_PASSWORD"
-  echo "📄 لایسنس: $LICENSE_VALUE"
-
-elif [ "$CHOICE" == "2" ]; then
-  echo "[*] حذف کامل..."
-  systemctl stop "$SERVICE_NAME" 2>/dev/null || true
-  systemctl disable "$SERVICE_NAME" 2>/dev/null || true
-  rm -f "$SYSTEMD_FILE"
-  systemctl daemon-reload
-  pkill -f "gunicorn.*app:app" 2>/dev/null || true
-  rm -rf "$APP_DIR" "$LOG_DIR"
-  echo "✅ حذف انجام شد"
-else
-  echo "انتخاب نامعتبر!"
-fi
+    app.run(host='0.0.0.0', port=5000)
