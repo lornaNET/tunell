@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== نصب پنل مانیتورینگ لورنا (Ubuntu 22.04+) ==="
+echo "=== نصب پنل مانیتورینگ لورنا PRO (Ubuntu 22.04+) ==="
 echo "1) نصب و راه‌اندازی پنل"
 echo "2) حذف پنل"
 read -p "انتخاب (1 یا 2): " CHOICE
@@ -15,7 +15,8 @@ LICENSE_VALUE="lorna"
 if [ "$CHOICE" == "1" ]; then
     echo "[*] نصب بسته‌های سیستمی..."
     apt update || true
-    apt install -y python3 python3-venv python3-pip curl
+    # lm-sensors برای دما (اختیاری ولی مفید)
+    apt install -y python3 python3-venv python3-pip curl lm-sensors
 
     echo "[*] ایجاد پوشه برنامه..."
     mkdir -p "$APP_DIR"
@@ -30,18 +31,19 @@ if [ "$CHOICE" == "1" ]; then
     pip install --upgrade pip
     pip install flask psutil
 
-    echo "[*] ایجاد فایل برنامه Flask..."
+    echo "[*] ایجاد فایل برنامه Flask (نسخه پرو)..."
     cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
-import psutil, os, time, threading
+import psutil, os, time, threading, platform, socket, shutil
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("LORNA_SECRET", "change_this_to_random_secret")
+app.secret_key = os.environ.get("LORNA_SECRET", "super_secret_key_lorna_change_me")
 
 USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
+# قفل و وضعیت شبکه برای محاسبه سرعت
 prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 net_lock = threading.Lock()
 
@@ -50,12 +52,13 @@ def verify_license(license_key):
         if os.path.exists(LICENSE_FILE):
             with open(LICENSE_FILE, 'r') as f:
                 stored = f.read().strip()
-            return license_key.strip() == stored
-        return license_key.strip() == "lorna"
+            return (license_key or "").strip() == stored
+        return (license_key or "").strip() == "lorna"
     except Exception:
         return False
 
 def get_network_speed_mbps():
+    """محاسبه سرعت لحظه‌ای آپلود/دانلود بر حسب Mbps"""
     with net_lock:
         counters = psutil.net_io_counters()
         cur_sent = counters.bytes_sent
@@ -82,93 +85,366 @@ def get_network_speed_mbps():
         up_mbps = (delta_sent * 8) / (dt * 1_000_000)
         down_mbps = (delta_recv * 8) / (dt * 1_000_000)
 
-        return round(up_mbps, 3), round(down_mbps, 3)
+        return round(max(up_mbps, 0), 2), round(max(down_mbps, 0), 2)
 
-login_page = """<!DOCTYPE html><html lang="fa"><head><meta charset="UTF-8"><title>ورود</title></head><body>
-<h2>ورود به پنل</h2>
-{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
-<form method="POST">
-    <input name="username" placeholder="نام کاربری"><br>
-    <input type="password" name="password" placeholder="رمز عبور"><br>
-    <input name="license" placeholder="کد لایسنس"><br>
-    <button>ورود</button>
-</form>
-</body></html>"""
+def get_cpu_temp():
+    """خواندن بیشینه دمای CPU اگر موجود بود؛ در غیر این صورت None"""
+    try:
+        if hasattr(psutil, "sensors_temperatures"):
+            temps = psutil.sensors_temperatures(fahrenheit=False) or {}
+            # تلاش برای پیدا کردن coretemp یا اولین سنسور
+            for key in ("coretemp", "k10temp", "acpitz", "cpu_thermal"):
+                if key in temps and temps[key]:
+                    # میانگین یا بیشینه؟ اینجا بیشینه برای محافظه‌کاری
+                    return max([t.current for t in temps[key] if getattr(t, "current", None) is not None])
+            # اگر کلید مشخص نبود، اولین سنسور را بگیر
+            for arr in temps.values():
+                if arr:
+                    return max([t.current for t in arr if getattr(t, "current", None) is not None])
+    except Exception:
+        pass
+    return None
 
-dashboard_page = """<!DOCTYPE html><html lang="fa"><head><meta charset="UTF-8"><title>مانیتورینگ</title>
+def get_top_processes(limit=10):
+    """لیست پردازش‌ها بر اساس CPU و RAM"""
+    procs = []
+    for p in psutil.process_iter(['pid','name','username','cpu_percent','memory_percent']):
+        try:
+            info = p.info
+            # cpu_percent اولین بار ممکن است صفر باشد؛ با آپدیت دوره‌ای به‌مرور درست می‌شود
+            procs.append({
+                'pid': info.get('pid'),
+                'name': (info.get('name') or '')[:40],
+                'user': (info.get('username') or '')[:20],
+                'cpu': round(info.get('cpu_percent') or 0.0, 2),
+                'mem': round(info.get('memory_percent') or 0.0, 2),
+            })
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    # مرتب‌سازی جداگانه برای CPU و RAM
+    top_cpu = sorted(procs, key=lambda x: x['cpu'], reverse=True)[:limit]
+    top_mem = sorted(procs, key=lambda x: x['mem'], reverse=True)[:limit]
+    return top_cpu, top_mem
+
+# ---------- HTML ----------
+login_page = """
+<!DOCTYPE html><html lang="fa"><head>
+<meta charset="UTF-8"><title>ورود | لورنا PRO</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+body{background:#0f1115;color:#e6e6e6;font-family:tahoma,iransans,system-ui}
+.card{background:#151924;border:1px solid #202633}
+.btn-primary{background:#6c5ce7;border:0}
+.form-control, .form-control:focus{background:#0f1115;color:#e6e6e6;border-color:#2b3242}
+</style></head><body>
+<div class="container" style="max-width:480px">
+  <div class="text-center mt-5 mb-3">
+    <h2>پنل مانیتورینگ <b>لورنا PRO</b></h2>
+    <p class="text-secondary">برای ورود اطلاعات زیر را وارد کنید</p>
+  </div>
+  <div class="card p-4">
+    <form method="POST">
+      <div class="mb-3"><input class="form-control" name="username" placeholder="نام کاربری" required></div>
+      <div class="mb-3"><input type="password" class="form-control" name="password" placeholder="رمز عبور" required></div>
+      <div class="mb-3"><input class="form-control" name="license" placeholder="کد لایسنس (lorna)" required></div>
+      <button class="btn btn-primary w-100">ورود</button>
+    </form>
+    {% if error %}<div class="mt-3 text-danger">{{ error }}</div>{% endif %}
+  </div>
+</div>
+</body></html>
+"""
+
+dashboard_page = """
+<!DOCTYPE html><html lang="fa"><head>
+<meta charset="UTF-8"><title>داشبورد | لورنا PRO</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{background:#0f1115;color:#e6e6e6;font-family:tahoma,iransans,system-ui}
+.card{background:#151924;border:1px solid #202633}
+.badge-soft{background:#202633;color:#b3b9c6}
+a, a:hover{color:#b2a4ff}
+.table thead th{color:#b3b9c6;border-bottom-color:#202633}
+.table tbody td{border-bottom-color:#202633}
+</style>
+</head><body>
+<div class="container-fluid p-3 p-md-4">
+  <!-- Header -->
+  <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
+    <div>
+      <h3 class="mb-1">داشبورد مانیتورینگ <b>لورنا PRO</b></h3>
+      <div class="text-secondary small">
+        میزبان: <span class="badge badge-soft" id="hostname">—</span>
+        | سیستم‌عامل: <span class="badge badge-soft" id="osname">—</span>
+        | آپ‌تایم: <span class="badge badge-soft" id="uptime">—</span>
+        | لایسنس: <span class="badge badge-soft" id="license">—</span>
+      </div>
+    </div>
+    <div class="mt-2 mt-md-0">
+      <a href="/logout" class="btn btn-danger">خروج</a>
+    </div>
+  </div>
+
+  <!-- Cards -->
+  <div class="row g-3">
+    <div class="col-lg-3 col-sm-6">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <div>
+            <div class="text-secondary small">CPU</div>
+            <div class="fs-4" id="cpuNow">— %</div>
+          </div>
+        </div>
+        <canvas id="cpuChart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="col-lg-3 col-sm-6">
+      <div class="card p-3">
+        <div class="text-secondary small">RAM</div>
+        <div class="fs-4" id="ramNow">— %</div>
+        <canvas id="ramChart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="col-lg-3 col-sm-6">
+      <div class="card p-3">
+        <div class="text-secondary small">آپلود</div>
+        <div class="fs-5" id="upNow">— Mbps</div>
+        <canvas id="upChart" height="120"></canvas>
+      </div>
+    </div>
+
+    <div class="col-lg-3 col-sm-6">
+      <div class="card p-3">
+        <div class="text-secondary small">دانلود</div>
+        <div class="fs-5" id="downNow">— Mbps</div>
+        <canvas id="downChart" height="120"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Disk & Temp -->
+  <div class="row g-3 mt-1">
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-center">
+          <div class="text-secondary small">استفاده از دیسک (پارتیشن /)</div>
+          <div class="fs-5"><span id="diskUsed">—</span>%</div>
+        </div>
+        <canvas id="diskChart" height="160"></canvas>
+      </div>
+    </div>
+    <div class="col-lg-6">
+      <div class="card p-3">
+        <div class="text-secondary small">دمای CPU</div>
+        <div class="fs-5"><span id="cpuTemp">ناموجود</span></div>
+        <div class="small text-secondary">اگر دما نمایش داده نمی‌شود، مطمئن شوید بسته <code>lm-sensors</code> نصب و سنسورها توسط سیستم پشتیبانی شوند.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Processes -->
+  <div class="card p-3 mt-3">
+    <div class="d-flex justify-content-between align-items-center mb-2">
+      <div class="text-secondary small">Top Processes</div>
+      <div class="small">به‌روزرسانی هر 2 ثانیه</div>
+    </div>
+    <div class="row">
+      <div class="col-lg-6">
+        <h6 class="mb-2">CPU برتر</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>PID</th><th>نام</th><th>کاربر</th><th class="text-end">CPU %</th></tr></thead>
+            <tbody id="topCpuBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="col-lg-6">
+        <h6 class="mb-2">RAM برتر</h6>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle">
+            <thead><tr><th>PID</th><th>نام</th><th>کاربر</th><th class="text-end">RAM %</th></tr></thead>
+            <tbody id="topMemBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
-async function refreshData(){
-    let res = await fetch('/get_system_data');
-    let data = await res.json();
-    document.getElementById('cpu').innerText = data.cpu + " %";
-    document.getElementById('ram').innerText = data.ram + " %";
-    document.getElementById('up').innerText = data.net.upload_mbps + " Mbps";
-    document.getElementById('down').innerText = data.net.download_mbps + " Mbps";
+const labels = [];
+const cpuData=[], ramData=[], upData=[], downData=[];
+function makeLineChart(ctx,label,data){
+  return new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:label,data:data,tension:0.3}]},
+    options:{responsive:true,animation:false,plugins:{legend:{labels:{color:'#e6e6e6'}}},
+             scales:{x:{ticks:{color:'#b3b9c6'}},y:{ticks:{color:'#b3b9c6'}}}}});
 }
+function makeDonut(ctx,label,used,free){
+  return new Chart(ctx,{type:'doughnut',data:{labels:['استفاده‌شده','آزاد'],datasets:[{data:[used,free]}]},
+    options:{responsive:true,plugins:{legend:{labels:{color:'#e6e6e6'}}}}});
+}
+
+let cpuChart = makeLineChart(document.getElementById('cpuChart'), 'CPU %', cpuData);
+let ramChart = makeLineChart(document.getElementById('ramChart'), 'RAM %', ramData);
+let upChart  = makeLineChart(document.getElementById('upChart'),  'Upload Mbps', upData);
+let downChart= makeLineChart(document.getElementById('downChart'),'Download Mbps', downData);
+let diskChart=null;
+
+function setText(id, text){ document.getElementById(id).innerText = text; }
+function fillTable(bodyId, rows, valueKey){
+  const tbody = document.getElementById(bodyId);
+  tbody.innerHTML = '';
+  rows.forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.pid}</td><td>${r.name}</td><td>${r.user}</td><td class="text-end">${r[valueKey]}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+async function refreshData(){
+  try{
+    const res = await fetch('/get_system_data');
+    const d = await res.json();
+
+    // Header info
+    setText('hostname', d.host.hostname);
+    setText('osname', d.host.os);
+    setText('uptime', d.host.uptime_human);
+    setText('license', d.license_ok ? 'فعال' : 'غیرفعال');
+
+    // Instant numbers
+    setText('cpuNow', d.cpu + ' %');
+    setText('ramNow', d.ram + ' %');
+    setText('upNow', d.net.upload_mbps + ' Mbps');
+    setText('downNow', d.net.download_mbps + ' Mbps');
+
+    // Charts
+    if(labels.length>40){ labels.shift(); cpuData.shift(); ramData.shift(); upData.shift(); downData.shift(); }
+    labels.push(new Date().toLocaleTimeString());
+    cpuData.push(d.cpu);
+    ramData.push(d.ram);
+    upData.push(d.net.upload_mbps);
+    downData.push(d.net.download_mbps);
+    cpuChart.update(); ramChart.update(); upChart.update(); downChart.update();
+
+    // Disk donut
+    setText('diskUsed', d.disk.percent);
+    if(!diskChart){
+      diskChart = makeDonut(document.getElementById('diskChart'), 'Disk', d.disk.percent, 100 - d.disk.percent);
+    } else {
+      diskChart.data.datasets[0].data = [d.disk.percent, 100 - d.disk.percent];
+      diskChart.update();
+    }
+
+    // Temp
+    setText('cpuTemp', d.cpu_temp !== null ? d.cpu_temp + ' °C' : 'ناموجود');
+
+    // Processes
+    fillTable('topCpuBody', d.top.cpu, 'cpu');
+    fillTable('topMemBody', d.top.mem, 'mem');
+
+  }catch(e){
+    console.error('refresh error', e);
+  }
+}
+refreshData();
 setInterval(refreshData, 2000);
 </script>
-</head><body onload="refreshData()">
-<h2>مانیتورینگ سیستم</h2>
-<p>CPU: <span id="cpu">{{ cpu }}</span></p>
-<p>RAM: <span id="ram">{{ ram }}</span></p>
-<p>آپلود: <span id="up">{{ net.upload_mbps }}</span></p>
-<p>دانلود: <span id="down">{{ net.download_mbps }}</span></p>
-<a href="/logout">خروج</a>
-</body></html>"""
+</body></html>
+"""
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if 'logged_in' in session:
         return redirect(url_for('dashboard'))
-    error = None
+    error=None
     if request.method == 'POST':
-        u = request.form.get('username','')
-        p = request.form.get('password','')
-        lic = request.form.get('license','')
-        if u == USERNAME and p == PASSWORD:
-            session['logged_in'] = True
-            session['license_ok'] = verify_license(lic)
+        u = request.form.get('username','').strip()
+        p = request.form.get('password','').strip()
+        lic = request.form.get('license','').strip()
+        if u==USERNAME and p==PASSWORD:
+            session['logged_in']=True
+            session['license_ok']=verify_license(lic)
             return redirect(url_for('dashboard'))
         else:
-            error = "نام کاربری یا رمز عبور اشتباه است"
+            error="نام کاربری یا رمز عبور اشتباه است"
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    cpu = psutil.cpu_percent(interval=0.1)
-    ram = psutil.virtual_memory().percent
-    up, down = get_network_speed_mbps()
-    return render_template_string(dashboard_page, cpu=cpu, ram=ram, net={'upload_mbps': up, 'download_mbps': down})
+    return render_template_string(dashboard_page)
 
 @app.route('/get_system_data')
-def get_data():
+def get_system_data():
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory().percent
+    disk = psutil.disk_usage('/')
     up, down = get_network_speed_mbps()
-    return jsonify({'cpu': cpu, 'ram': ram, 'net': {'upload_mbps': up, 'download_mbps': down}})
+    cpu_temp = get_cpu_temp()
+    top_cpu, top_mem = get_top_processes(limit=10)
+
+    boot_ts = psutil.boot_time()
+    uptime_sec = int(time.time() - boot_ts)
+    def humanize(sec):
+        d, r = divmod(sec, 86400)
+        h, r = divmod(r, 3600)
+        m, s = divmod(r, 60)
+        out=[]
+        if d: out.append(f"{d} روز")
+        if h: out.append(f"{h} ساعت")
+        if m: out.append(f"{m} دقیقه")
+        if not out: out.append(f"{s} ثانیه")
+        return " ".join(out)
+
+    data = {
+        'cpu': round(cpu, 2),
+        'ram': round(ram, 2),
+        'disk': {
+            'total_gb': round(disk.total/ (1024**3), 2),
+            'used_gb': round(disk.used/ (1024**3), 2),
+            'free_gb': round(disk.free/ (1024**3), 2),
+            'percent': round(disk.percent, 2)
+        },
+        'net': {'upload_mbps': up, 'download_mbps': down},
+        'cpu_temp': round(cpu_temp, 1) if cpu_temp is not None else None,
+        'host': {
+            'hostname': socket.gethostname(),
+            'os': f"{platform.system()} {platform.release()}",
+            'uptime_human': humanize(uptime_sec)
+        },
+        'license_ok': session.get('license_ok', False),
+        'top': {'cpu': top_cpu, 'mem': top_mem}
+    }
+    return jsonify(data)
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
-if __name__ == '__main__':
+if __name__=='__main__':
     app.run(host='0.0.0.0', port=5000)
 PYEOF
 
     echo "[*] ایجاد سرویس systemd..."
     cat > /etc/systemd/system/lorna.service <<EOF
 [Unit]
-Description=Lorna Monitoring Panel
+Description=Lorna Monitoring Panel (PRO)
 After=network.target
 
 [Service]
 User=root
 WorkingDirectory=$APP_DIR
+Environment=LORNA_SECRET=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
 ExecStart=$VENV_DIR/bin/python $APP_DIR/app.py
 Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
@@ -177,9 +453,15 @@ EOF
     systemctl daemon-reload
     systemctl enable --now lorna.service
 
+    # اگر ufw فعاله، پورت 5000 رو باز کن (بی‌خطر: اگر ufw نباشه یا غیرفعال باشه خطایی نمی‌ده)
+    if command -v ufw >/dev/null 2>&1; then
+      ufw allow $APP_PORT/tcp || true
+    fi
+
     echo "✅ نصب کامل شد."
-    echo "آدرس دسترسی: http://<IP-Server>:$APP_PORT"
-    echo "یوزر: admin | پسورد: admin123 | لایسنس: $LICENSE_VALUE"
+    echo "آدرس دسترسی:  http://<IP-Server>:$APP_PORT"
+    echo "یوزر: admin  | پسورد: admin123 | لایسنس: $LICENSE_VALUE"
+    echo "اگر دما نمایش داده نمی‌شود، نصب lm-sensors انجام شده ولی ممکن است نیاز به پشتیبانی سخت‌افزار داشته باشد."
 
 elif [ "$CHOICE" == "2" ]; then
     echo "[*] حذف پنل..."
