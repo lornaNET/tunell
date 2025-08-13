@@ -36,7 +36,7 @@ from flask import Flask, render_template_string, request, redirect, url_for, ses
 import psutil, os, time, threading
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("LORNA_SECRET", "super_secret_key_lorna_change_me")
+app.secret_key = os.environ.get("LORNA_SECRET", "change_this_to_random_secret")
 
 USERNAME = "admin"
 PASSWORD = "admin123"
@@ -84,86 +84,37 @@ def get_network_speed_mbps():
 
         return round(up_mbps, 3), round(down_mbps, 3)
 
-# ===== HTML Templates =====
-login_page = r'''
-<!DOCTYPE html>
-<html lang="fa">
-<head>
-<meta charset="UTF-8">
-<title>ورود به پنل لورنا</title>
-<style>
-body { font-family: Tahoma; background-color: #f0f0f0; text-align: center; }
-.login-box { width: 300px; margin: auto; margin-top: 100px; padding: 20px; background: white; border-radius: 8px; box-shadow: 0px 0px 10px gray; }
-input { width: 90%; padding: 10px; margin: 5px 0; border: 1px solid #ccc; border-radius: 4px; }
-button { background-color: #28a745; color: white; padding: 10px; border: none; border-radius: 4px; cursor: pointer; }
-button:hover { background-color: #218838; }
-.error { color: red; }
-</style>
-</head>
-<body>
-<div class="login-box">
-    <h2>ورود به پنل</h2>
-    {% if error %}<p class="error">{{ error }}</p>{% endif %}
-    <form method="POST">
-        <input type="text" name="username" placeholder="نام کاربری"><br>
-        <input type="password" name="password" placeholder="رمز عبور"><br>
-        <input type="text" name="license" placeholder="کد لایسنس"><br>
-        <button type="submit">ورود</button>
-    </form>
-</div>
-</body>
-</html>
-'''
+login_page = """<!DOCTYPE html><html lang="fa"><head><meta charset="UTF-8"><title>ورود</title></head><body>
+<h2>ورود به پنل</h2>
+{% if error %}<p style="color:red">{{ error }}</p>{% endif %}
+<form method="POST">
+    <input name="username" placeholder="نام کاربری"><br>
+    <input type="password" name="password" placeholder="رمز عبور"><br>
+    <input name="license" placeholder="کد لایسنس"><br>
+    <button>ورود</button>
+</form>
+</body></html>"""
 
-dashboard_page = r'''
-<!DOCTYPE html>
-<html lang="fa">
-<head>
-<meta charset="UTF-8">
-<title>داشبورد مانیتورینگ</title>
-<style>
-body { font-family: Tahoma; background-color: #eef; }
-.container { width: 600px; margin: auto; padding: 20px; }
-.card { background: white; padding: 15px; margin: 10px 0; border-radius: 8px; box-shadow: 0px 0px 5px gray; }
-h2 { text-align: center; }
-.logout { text-align: center; margin-top: 10px; }
-.error { color: red; text-align: center; }
-</style>
+dashboard_page = """<!DOCTYPE html><html lang="fa"><head><meta charset="UTF-8"><title>مانیتورینگ</title>
 <script>
 async function refreshData(){
     let res = await fetch('/get_system_data');
     let data = await res.json();
     document.getElementById('cpu').innerText = data.cpu + " %";
     document.getElementById('ram').innerText = data.ram + " %";
-    document.getElementById('upload').innerText = data.net.upload_mbps + " Mbps";
-    document.getElementById('download').innerText = data.net.download_mbps + " Mbps";
+    document.getElementById('up').innerText = data.net.upload_mbps + " Mbps";
+    document.getElementById('down').innerText = data.net.download_mbps + " Mbps";
 }
 setInterval(refreshData, 2000);
 </script>
-</head>
-<body onload="refreshData()">
-<div class="container">
-    <h2>داشبورد مانیتورینگ</h2>
-    {% if not license_ok %}
-        <div class="card">
-            <p class="error">لایسنس فعال نیست!</p>
-            {% if error %}<p class="error">{{ error }}</p>{% endif %}
-            <form method="POST" action="/set_license">
-                <input type="text" name="license" placeholder="کد لایسنس">
-                <button type="submit">ثبت</button>
-            </form>
-        </div>
-    {% endif %}
-    <div class="card">CPU: <span id="cpu">{{ cpu }}</span></div>
-    <div class="card">RAM: <span id="ram">{{ ram }}</span></div>
-    <div class="card">آپلود: <span id="upload">{{ net.upload_mbps }}</span></div>
-    <div class="card">دانلود: <span id="download">{{ net.download_mbps }}</span></div>
-    <div class="logout"><a href="/logout">خروج</a></div>
-</div>
-</body>
-</html>
-'''
-# ==========================
+</head><body onload="refreshData()">
+<h2>مانیتورینگ سیستم</h2>
+<p>CPU: <span id="cpu">{{ cpu }}</span></p>
+<p>RAM: <span id="ram">{{ ram }}</span></p>
+<p>آپلود: <span id="up">{{ net.upload_mbps }}</span></p>
+<p>دانلود: <span id="down">{{ net.download_mbps }}</span></p>
+<a href="/logout">خروج</a>
+</body></html>"""
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
@@ -171,57 +122,28 @@ def login():
         return redirect(url_for('dashboard'))
     error = None
     if request.method == 'POST':
-        username = request.form.get('username','').strip()
-        password = request.form.get('password','').strip()
-        license_key = request.form.get('license','').strip()
-        if username == USERNAME and password == PASSWORD:
+        u = request.form.get('username','')
+        p = request.form.get('password','')
+        lic = request.form.get('license','')
+        if u == USERNAME and p == PASSWORD:
             session['logged_in'] = True
-            session['license_ok'] = verify_license(license_key)
+            session['license_ok'] = verify_license(lic)
             return redirect(url_for('dashboard'))
-        error = 'نام کاربری یا رمز عبور اشتباه است'
+        else:
+            error = "نام کاربری یا رمز عبور اشتباه است"
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    ram_percent = psutil.virtual_memory().percent
-    up_mbps, down_mbps = get_network_speed_mbps()
-    return render_template_string(
-        dashboard_page,
-        cpu=cpu_percent,
-        ram=ram_percent,
-        net={'upload_mbps': up_mbps, 'download_mbps': down_mbps},
-        license_ok=session.get('license_ok', False),
-        error=None,
-        request=request,
-        venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
-        app_path=os.path.dirname(__file__)
-    )
-
-@app.route('/set_license', methods=['POST'])
-def set_license():
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-    license_key = request.form.get('license','').strip()
-    if verify_license(license_key):
-        session['license_ok'] = True
-        return redirect(url_for('dashboard'))
-    return render_template_string(
-        dashboard_page,
-        cpu=psutil.cpu_percent(interval=0.1),
-        ram=psutil.virtual_memory().percent,
-        net={'upload_mbps': 0, 'download_mbps': 0},
-        license_ok=False,
-        error="کد لایسنس نامعتبر است",
-        request=request,
-        venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
-        app_path=os.path.dirname(__file__)
-    )
+    cpu = psutil.cpu_percent(interval=0.1)
+    ram = psutil.virtual_memory().percent
+    up, down = get_network_speed_mbps()
+    return render_template_string(dashboard_page, cpu=cpu, ram=ram, net={'upload_mbps': up, 'download_mbps': down})
 
 @app.route('/get_system_data')
-def get_system_data():
+def get_data():
     cpu = psutil.cpu_percent(interval=0.1)
     ram = psutil.virtual_memory().percent
     up, down = get_network_speed_mbps()
@@ -236,18 +158,37 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
 PYEOF
 
-    echo "[+] نصب کامل شد."
-    echo "برای اجرای پنل:"
-    echo "  source $VENV_DIR/bin/activate"
-    echo "  python $APP_DIR/app.py"
-    echo "سپس مرورگر: http://<IP-Server>:$APP_PORT"
+    echo "[*] ایجاد سرویس systemd..."
+    cat > /etc/systemd/system/lorna.service <<EOF
+[Unit]
+Description=Lorna Monitoring Panel
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory=$APP_DIR
+ExecStart=$VENV_DIR/bin/python $APP_DIR/app.py
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now lorna.service
+
+    echo "✅ نصب کامل شد."
+    echo "آدرس دسترسی: http://<IP-Server>:$APP_PORT"
     echo "یوزر: admin | پسورد: admin123 | لایسنس: $LICENSE_VALUE"
 
 elif [ "$CHOICE" == "2" ]; then
     echo "[*] حذف پنل..."
-    pkill -f "$APP_DIR/app.py" || true
+    systemctl stop lorna.service || true
+    systemctl disable lorna.service || true
+    rm -f /etc/systemd/system/lorna.service
     rm -rf "$APP_DIR"
-    echo "[+] حذف انجام شد."
+    systemctl daemon-reload
+    echo "✅ حذف انجام شد."
 else
     echo "گزینه نامعتبر."
 fi
