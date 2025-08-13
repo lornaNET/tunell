@@ -66,7 +66,6 @@ def get_network_speed_mbps():
             prev_net['bytes_sent'] = cur_sent
             prev_net['bytes_recv'] = cur_recv
             prev_net['time'] = now
-            time.sleep(1)  # تاخیر اولیه برای اندازه‌گیری واقعی
             return 0.0, 0.0
 
         dt = now - prev_net['time']
@@ -85,11 +84,11 @@ def get_network_speed_mbps():
 
         return round(up_mbps, 3), round(down_mbps, 3)
 
-# صفحات HTML همون نسخه قبلی شما هستند بدون تغییرات اصلی
-# (login_page, dashboard_page اینجا درج شوند — برای اختصار حذف شده)
-# ...
+# ===== HTML Templates =====
+login_page = r'''<<< اینجا کل متن login_page که خودت تو نسخه اولیه گذاشتی بیاد >>>'''
+dashboard_page = r'''<<< اینجا کل متن dashboard_page که خودت تو نسخه اولیه گذاشتی بیاد >>>'''
+# ==========================
 
-# مسیرهای Flask
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if 'logged_in' in session:
@@ -121,8 +120,8 @@ def dashboard():
         license_ok=session.get('license_ok', False),
         error=None,
         request=request,
-        venv=VENV_DIR,
-        app_path=APP_DIR
+        venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
+        app_path=os.path.dirname(__file__)
     )
 
 @app.route('/set_license', methods=['POST'])
@@ -141,8 +140,8 @@ def set_license():
         license_ok=False,
         error="کد لایسنس نامعتبر است",
         request=request,
-        venv=VENV_DIR,
-        app_path=APP_DIR
+        venv=os.path.join(os.path.dirname(__file__), '..', 'venv'),
+        app_path=os.path.dirname(__file__)
     )
 
 @app.route('/get_system_data')
