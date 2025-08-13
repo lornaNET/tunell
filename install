@@ -15,8 +15,7 @@ LICENSE_VALUE="lorna"
 if [ "$CHOICE" == "1" ]; then
     echo "[*] نصب بسته‌های سیستمی..."
     apt update || true
-    # lm-sensors برای دما (اختیاری ولی مفید)
-    apt install -y python3 python3-venv python3-pip curl lm-sensors
+    apt install -y python3 python3-venv python3-pip curl lm-sensors jq
 
     echo "[*] ایجاد پوشه برنامه..."
     mkdir -p "$APP_DIR"
@@ -29,12 +28,12 @@ if [ "$CHOICE" == "1" ]; then
 
     echo "[*] نصب پکیج‌های پایتونی..."
     pip install --upgrade pip
-    pip install flask psutil
+    pip install flask psutil requests
 
-    echo "[*] ایجاد فایل برنامه Flask (نسخه پرو)..."
+    echo "[*] ایجاد فایل برنامه Flask (نسخه نهایی)..."
     cat > "$APP_DIR/app.py" <<'PYEOF'
 from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
-import psutil, os, time, threading, platform, socket, shutil
+import psutil, os, time, threading, platform, socket, requests
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("LORNA_SECRET", "super_secret_key_lorna_change_me")
@@ -43,9 +42,15 @@ USERNAME = "admin"
 PASSWORD = "admin123"
 LICENSE_FILE = "/opt/network_monitor/license.key"
 
-# قفل و وضعیت شبکه برای محاسبه سرعت
 prev_net = {'bytes_sent': None, 'bytes_recv': None, 'time': None}
 net_lock = threading.Lock()
+
+cumulative_data = {
+    'internal_upload_bytes': 0,
+    'internal_download_bytes': 0,
+    'external_upload_bytes': 0,
+    'external_download_bytes': 0,
+}
 
 def verify_license(license_key):
     try:
@@ -57,12 +62,17 @@ def verify_license(license_key):
     except Exception:
         return False
 
-def get_network_speed_mbps():
-    """محاسبه سرعت لحظه‌ای آپلود/دانلود بر حسب Mbps"""
+def get_network_io():
+    """داده‌های اولیه شبکه"""
+    counters = psutil.net_io_counters()
+    return counters.bytes_sent, counters.bytes_recv
+
+def get_network_speed_mb():
+    """
+    محاسبه سرعت آپلود و دانلود (MBps) و جمع‌آوری مقدار تجمعی
+    """
     with net_lock:
-        counters = psutil.net_io_counters()
-        cur_sent = counters.bytes_sent
-        cur_recv = counters.bytes_recv
+        cur_sent, cur_recv = get_network_io()
         now = time.time()
 
         if prev_net['time'] is None:
@@ -82,22 +92,42 @@ def get_network_speed_mbps():
         prev_net['bytes_recv'] = cur_recv
         prev_net['time'] = now
 
-        up_mbps = (delta_sent * 8) / (dt * 1_000_000)
-        down_mbps = (delta_recv * 8) / (dt * 1_000_000)
+        # سرعت MBps
+        up_mb = delta_sent / (1024 * 1024) / dt
+        down_mb = delta_recv / (1024 * 1024) / dt
 
-        return round(max(up_mbps, 0), 2), round(max(down_mbps, 0), 2)
+        # ذخیره تجمعی (ممکنه برای داخلی/خارجی مجزا بشه در آینده)
+        cumulative_data['internal_upload_bytes'] += max(delta_sent, 0)
+        cumulative_data['internal_download_bytes'] += max(delta_recv, 0)
+
+        return round(max(up_mb, 0), 3), round(max(down_mb, 0), 3)
+
+def get_external_network_usage():
+    """
+    بررسی آپلود و دانلود سرور ایران و خارج با استفاده از api ها
+    (مثال: استفاده از ipinfo.io برای IP و ترافیک)
+    این داده‌ها به صورت نمونه و با یک درخواست تست هستند.
+    """
+
+    # اینجا میشه API های بهتری برای ترافیک خارجی تعریف کرد
+    # فعلاً فقط IP سرور رو می‌گیریم و کشور رو نمایش میدیم
+
+    try:
+        r = requests.get("https://ipinfo.io/json", timeout=3)
+        data = r.json()
+        ip = data.get("ip", "نامعلوم")
+        country = data.get("country", "نامعلوم")
+        return ip, country
+    except Exception:
+        return "نامعلوم", "نامعلوم"
 
 def get_cpu_temp():
-    """خواندن بیشینه دمای CPU اگر موجود بود؛ در غیر این صورت None"""
     try:
         if hasattr(psutil, "sensors_temperatures"):
             temps = psutil.sensors_temperatures(fahrenheit=False) or {}
-            # تلاش برای پیدا کردن coretemp یا اولین سنسور
             for key in ("coretemp", "k10temp", "acpitz", "cpu_thermal"):
                 if key in temps and temps[key]:
-                    # میانگین یا بیشینه؟ اینجا بیشینه برای محافظه‌کاری
                     return max([t.current for t in temps[key] if getattr(t, "current", None) is not None])
-            # اگر کلید مشخص نبود، اولین سنسور را بگیر
             for arr in temps.values():
                 if arr:
                     return max([t.current for t in arr if getattr(t, "current", None) is not None])
@@ -106,12 +136,10 @@ def get_cpu_temp():
     return None
 
 def get_top_processes(limit=10):
-    """لیست پردازش‌ها بر اساس CPU و RAM"""
     procs = []
     for p in psutil.process_iter(['pid','name','username','cpu_percent','memory_percent']):
         try:
             info = p.info
-            # cpu_percent اولین بار ممکن است صفر باشد؛ با آپدیت دوره‌ای به‌مرور درست می‌شود
             procs.append({
                 'pid': info.get('pid'),
                 'name': (info.get('name') or '')[:40],
@@ -121,356 +149,393 @@ def get_top_processes(limit=10):
             })
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
-    # مرتب‌سازی جداگانه برای CPU و RAM
     top_cpu = sorted(procs, key=lambda x: x['cpu'], reverse=True)[:limit]
     top_mem = sorted(procs, key=lambda x: x['mem'], reverse=True)[:limit]
     return top_cpu, top_mem
 
-# ---------- HTML ----------
+# --------- HTML (Login + Dashboard) ---------
 login_page = """
 <!DOCTYPE html><html lang="fa"><head>
 <meta charset="UTF-8"><title>ورود | لورنا PRO</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
-body{background:#0f1115;color:#e6e6e6;font-family:tahoma,iransans,system-ui}
-.card{background:#151924;border:1px solid #202633}
-.btn-primary{background:#6c5ce7;border:0}
-.form-control, .form-control:focus{background:#0f1115;color:#e6e6e6;border-color:#2b3242}
+body{background:#121212;color:#e0e0e0;font-family:tahoma,iransans,system-ui}
+.card{background:#1e1e2f;border-radius:10px;border:none;box-shadow: 0 0 10px #0008;}
+.btn-primary{background:#ff4d4d;border:0;transition:0.3s;}
+.btn-primary:hover{background:#ff0000;}
+.form-control, .form-control:focus{background:#121212;color:#e0e0e0;border:none;border-bottom:2px solid #444;}
+.form-control::placeholder{color:#888;}
 </style></head><body>
-<div class="container" style="max-width:480px">
-  <div class="text-center mt-5 mb-3">
+<div class="container" style="max-width:420px; margin-top:80px;">
+  <div class="text-center mb-4">
     <h2>پنل مانیتورینگ <b>لورنا PRO</b></h2>
-    <p class="text-secondary">برای ورود اطلاعات زیر را وارد کنید</p>
+    <p class="text-secondary">ورود به پنل</p>
   </div>
   <div class="card p-4">
     <form method="POST">
-      <div class="mb-3"><input class="form-control" name="username" placeholder="نام کاربری" required></div>
-      <div class="mb-3"><input type="password" class="form-control" name="password" placeholder="رمز عبور" required></div>
-      <div class="mb-3"><input class="form-control" name="license" placeholder="کد لایسنس (lorna)" required></div>
+      <input class="form-control mb-3" name="username" placeholder="نام کاربری" required autofocus>
+      <input type="password" class="form-control mb-3" name="password" placeholder="رمز عبور" required>
+      <input class="form-control mb-3" name="license" placeholder="کد لایسنس (lorna)" required>
       <button class="btn btn-primary w-100">ورود</button>
     </form>
-    {% if error %}<div class="mt-3 text-danger">{{ error }}</div>{% endif %}
+    {% if error %}<div class="mt-3 text-danger text-center">{{ error }}</div>{% endif %}
   </div>
 </div>
 </body></html>
 """
 
 dashboard_page = """
-<!DOCTYPE html><html lang="fa"><head>
-<meta charset="UTF-8"><title>داشبورد | لورنا PRO</title>
+<!DOCTYPE html><html lang="fa" data-theme="dark"><head>
+<meta charset="UTF-8">
+<title>داشبورد | لورنا PRO</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <style>
-body{background:#0f1115;color:#e6e6e6;font-family:tahoma,iransans,system-ui}
-.card{background:#151924;border:1px solid #202633}
-.badge-soft{background:#202633;color:#b3b9c6}
-a, a:hover{color:#b2a4ff}
-.table thead th{color:#b3b9c6;border-bottom-color:#202633}
-.table tbody td{border-bottom-color:#202633}
+:root {
+  --bg-dark: #121212;
+  --bg-light: #f9f9f9;
+  --text-dark: #121212;
+  --text-light: #e0e0e0;
+  --primary-red: #ff4d4d;
+  --primary-blue: #4d94ff;
+}
+[data-theme="dark"] {
+  background-color: var(--bg-dark);
+  color: var(--text-light);
+}
+[data-theme="light"] {
+  background-color: var(--bg-light);
+  color: var(--text-dark);
+}
+body {
+  font-family: Tahoma, iransans, system-ui;
+  margin: 0; padding: 0;
+}
+.container {
+  max-width: 960px;
+  padding: 20px;
+  margin: auto;
+}
+.card {
+  background: #1e1e2f;
+  border-radius: 12px;
+  margin-bottom: 20px;
+  padding: 15px 20px;
+  box-shadow: 0 0 12px #0008;
+}
+[data-theme="light"] .card {
+  background: #fff;
+  box-shadow: 0 0 15px #ccc;
+  color: var(--text-dark);
+}
+h2 {
+  font-weight: 600;
+  margin-bottom: 15px;
+}
+.btn-toggle-theme {
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: none;
+  font-weight: 600;
+  background: var(--primary-blue);
+  color: #fff;
+  margin-bottom: 15px;
+  transition: background-color 0.3s;
+}
+.btn-toggle-theme:hover {
+  background: var(--primary-red);
+}
+table {
+  width: 100%;
+  color: inherit;
+  border-collapse: collapse;
+}
+th, td {
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #444;
+}
+[data-theme="light"] th, [data-theme="light"] td {
+  border-color: #ddd;
+}
+small.text-muted {
+  color: #aaa;
+}
+.chart-container {
+  width: 100%;
+  max-width: 460px;
+  margin: 20px auto;
+}
 </style>
 </head><body>
-<div class="container-fluid p-3 p-md-4">
-  <!-- Header -->
-  <div class="d-flex flex-wrap justify-content-between align-items-center mb-3">
-    <div>
-      <h3 class="mb-1">داشبورد مانیتورینگ <b>لورنا PRO</b></h3>
-      <div class="text-secondary small">
-        میزبان: <span class="badge badge-soft" id="hostname">—</span>
-        | سیستم‌عامل: <span class="badge badge-soft" id="osname">—</span>
-        | آپ‌تایم: <span class="badge badge-soft" id="uptime">—</span>
-        | لایسنس: <span class="badge badge-soft" id="license">—</span>
-      </div>
-    </div>
-    <div class="mt-2 mt-md-0">
-      <a href="/logout" class="btn btn-danger">خروج</a>
-    </div>
+<div class="container">
+  <div class="d-flex justify-content-between align-items-center">
+    <h2>داشبورد مانیتورینگ <b>لورنا PRO</b></h2>
+    <button class="btn-toggle-theme" id="toggleThemeBtn">تغییر حالت روشن/تاریک</button>
   </div>
 
-  <!-- Cards -->
-  <div class="row g-3">
-    <div class="col-lg-3 col-sm-6">
-      <div class="card p-3">
-        <div class="d-flex justify-content-between align-items-center">
-          <div>
-            <div class="text-secondary small">CPU</div>
-            <div class="fs-4" id="cpuNow">— %</div>
-          </div>
-        </div>
-        <canvas id="cpuChart" height="120"></canvas>
-      </div>
-    </div>
+  <div class="card">
+    <h4>وضعیت سرور</h4>
+    <table>
+      <tr><th>مقدار</th><th>پارامتر</th></tr>
+      <tr><td>{{hostname}}</td><td>نام میزبان (Hostname)</td></tr>
+      <tr><td>{{platform}}</td><td>سیستم‌عامل</td></tr>
+      <tr><td>{{cpu_count}}</td><td>تعداد هسته CPU</td></tr>
+      <tr><td>{{cpu_temp}} °C</td><td>دمای CPU</td></tr>
+      <tr><td>{{uptime}}</td><td>زمان بالا بودن سرور</td></tr>
+      <tr><td>{{external_ip}} ({{external_country}})</td><td>IP خارجی و کشور</td></tr>
+    </table>
+  </div>
 
-    <div class="col-lg-3 col-sm-6">
-      <div class="card p-3">
-        <div class="text-secondary small">RAM</div>
-        <div class="fs-4" id="ramNow">— %</div>
-        <canvas id="ramChart" height="120"></canvas>
-      </div>
-    </div>
+  <div class="card">
+    <h4>مصرف CPU و RAM</h4>
+    <canvas id="cpuChart" height="180"></canvas>
+    <canvas id="ramChart" height="180" style="margin-top:30px;"></canvas>
+  </div>
 
-    <div class="col-lg-3 col-sm-6">
-      <div class="card p-3">
-        <div class="text-secondary small">آپلود</div>
-        <div class="fs-5" id="upNow">— Mbps</div>
-        <canvas id="upChart" height="120"></canvas>
+  <div class="card">
+    <h4>سرعت شبکه (آپلود / دانلود) MB/s</h4>
+    <div class="d-flex justify-content-around">
+      <div>
+        <h5>سرعت فعلی</h5>
+        <p>آپلود: <span id="netUp">0.00</span> MB/s</p>
+        <p>دانلود: <span id="netDown">0.00</span> MB/s</p>
       </div>
-    </div>
-
-    <div class="col-lg-3 col-sm-6">
-      <div class="card p-3">
-        <div class="text-secondary small">دانلود</div>
-        <div class="fs-5" id="downNow">— Mbps</div>
-        <canvas id="downChart" height="120"></canvas>
+      <div>
+        <h5>حجم تجمعی (MB)</h5>
+        <p>آپلود: <span id="cumuUp">0.00</span> MB</p>
+        <p>دانلود: <span id="cumuDown">0.00</span> MB</p>
       </div>
     </div>
   </div>
 
-  <!-- Disk & Temp -->
-  <div class="row g-3 mt-1">
-    <div class="col-lg-6">
-      <div class="card p-3">
-        <div class="d-flex justify-content-between align-items-center">
-          <div class="text-secondary small">استفاده از دیسک (پارتیشن /)</div>
-          <div class="fs-5"><span id="diskUsed">—</span>%</div>
-        </div>
-        <canvas id="diskChart" height="160"></canvas>
-      </div>
-    </div>
-    <div class="col-lg-6">
-      <div class="card p-3">
-        <div class="text-secondary small">دمای CPU</div>
-        <div class="fs-5"><span id="cpuTemp">ناموجود</span></div>
-        <div class="small text-secondary">اگر دما نمایش داده نمی‌شود، مطمئن شوید بسته <code>lm-sensors</code> نصب و سنسورها توسط سیستم پشتیبانی شوند.</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Processes -->
-  <div class="card p-3 mt-3">
-    <div class="d-flex justify-content-between align-items-center mb-2">
-      <div class="text-secondary small">Top Processes</div>
-      <div class="small">به‌روزرسانی هر 2 ثانیه</div>
-    </div>
+  <div class="card">
+    <h4>پردازش‌ها برتر</h4>
     <div class="row">
-      <div class="col-lg-6">
-        <h6 class="mb-2">CPU برتر</h6>
-        <div class="table-responsive">
-          <table class="table table-sm align-middle">
-            <thead><tr><th>PID</th><th>نام</th><th>کاربر</th><th class="text-end">CPU %</th></tr></thead>
-            <tbody id="topCpuBody"></tbody>
-          </table>
-        </div>
+      <div class="col-md-6">
+        <h5>بیشترین مصرف CPU</h5>
+        <table id="topCpu" class="table table-sm table-striped">
+          <thead><tr><th>نام</th><th>PID</th><th>کاربر</th><th>%CPU</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
-      <div class="col-lg-6">
-        <h6 class="mb-2">RAM برتر</h6>
-        <div class="table-responsive">
-          <table class="table table-sm align-middle">
-            <thead><tr><th>PID</th><th>نام</th><th>کاربر</th><th class="text-end">RAM %</th></tr></thead>
-            <tbody id="topMemBody"></tbody>
-          </table>
-        </div>
+      <div class="col-md-6">
+        <h5>بیشترین مصرف RAM</h5>
+        <table id="topMem" class="table table-sm table-striped">
+          <thead><tr><th>نام</th><th>PID</th><th>کاربر</th><th>%RAM</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </div>
   </div>
 </div>
 
 <script>
-const labels = [];
-const cpuData=[], ramData=[], upData=[], downData=[];
-function makeLineChart(ctx,label,data){
-  return new Chart(ctx,{type:'line',data:{labels:labels,datasets:[{label:label,data:data,tension:0.3}]},
-    options:{responsive:true,animation:false,plugins:{legend:{labels:{color:'#e6e6e6'}}},
-             scales:{x:{ticks:{color:'#b3b9c6'}},y:{ticks:{color:'#b3b9c6'}}}}});
-}
-function makeDonut(ctx,label,used,free){
-  return new Chart(ctx,{type:'doughnut',data:{labels:['استفاده‌شده','آزاد'],datasets:[{data:[used,free]}]},
-    options:{responsive:true,plugins:{legend:{labels:{color:'#e6e6e6'}}}}});
-}
+let theme = localStorage.getItem("theme") || "dark";
+document.documentElement.setAttribute("data-theme", theme);
 
-let cpuChart = makeLineChart(document.getElementById('cpuChart'), 'CPU %', cpuData);
-let ramChart = makeLineChart(document.getElementById('ramChart'), 'RAM %', ramData);
-let upChart  = makeLineChart(document.getElementById('upChart'),  'Upload Mbps', upData);
-let downChart= makeLineChart(document.getElementById('downChart'),'Download Mbps', downData);
-let diskChart=null;
+document.getElementById("toggleThemeBtn").addEventListener("click", () => {
+  theme = theme === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", theme);
+  localStorage.setItem("theme", theme);
+});
 
-function setText(id, text){ document.getElementById(id).innerText = text; }
-function fillTable(bodyId, rows, valueKey){
-  const tbody = document.getElementById(bodyId);
-  tbody.innerHTML = '';
-  rows.forEach(r=>{
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.pid}</td><td>${r.name}</td><td>${r.user}</td><td class="text-end">${r[valueKey]}</td>`;
-    tbody.appendChild(tr);
-  });
-}
+const cpuCtx = document.getElementById('cpuChart').getContext('2d');
+const ramCtx = document.getElementById('ramChart').getContext('2d');
 
-async function refreshData(){
-  try{
-    const res = await fetch('/get_system_data');
-    const d = await res.json();
-
-    // Header info
-    setText('hostname', d.host.hostname);
-    setText('osname', d.host.os);
-    setText('uptime', d.host.uptime_human);
-    setText('license', d.license_ok ? 'فعال' : 'غیرفعال');
-
-    // Instant numbers
-    setText('cpuNow', d.cpu + ' %');
-    setText('ramNow', d.ram + ' %');
-    setText('upNow', d.net.upload_mbps + ' Mbps');
-    setText('downNow', d.net.download_mbps + ' Mbps');
-
-    // Charts
-    if(labels.length>40){ labels.shift(); cpuData.shift(); ramData.shift(); upData.shift(); downData.shift(); }
-    labels.push(new Date().toLocaleTimeString());
-    cpuData.push(d.cpu);
-    ramData.push(d.ram);
-    upData.push(d.net.upload_mbps);
-    downData.push(d.net.download_mbps);
-    cpuChart.update(); ramChart.update(); upChart.update(); downChart.update();
-
-    // Disk donut
-    setText('diskUsed', d.disk.percent);
-    if(!diskChart){
-      diskChart = makeDonut(document.getElementById('diskChart'), 'Disk', d.disk.percent, 100 - d.disk.percent);
-    } else {
-      diskChart.data.datasets[0].data = [d.disk.percent, 100 - d.disk.percent];
-      diskChart.update();
+const cpuChart = new Chart(cpuCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['استفاده CPU', 'باقی‌مانده'],
+        datasets: [{
+            data: [0, 100],
+            backgroundColor: ['#ff4d4d', '#444'],
+            borderWidth: 0
+        }]
+    },
+    options: {
+        cutout: '70%',
+        plugins: {legend: {display: false}},
+        animation: {duration: 500}
     }
+});
 
-    // Temp
-    setText('cpuTemp', d.cpu_temp !== null ? d.cpu_temp + ' °C' : 'ناموجود');
+const ramChart = new Chart(ramCtx, {
+    type: 'doughnut',
+    data: {
+        labels: ['استفاده RAM', 'باقی‌مانده'],
+        datasets: [{
+            data: [0, 100],
+            backgroundColor: ['#4d94ff', '#444'],
+            borderWidth: 0
+        }]
+    },
+    options: {
+        cutout: '70%',
+        plugins: {legend: {display: false}},
+        animation: {duration: 500}
+    }
+});
 
-    // Processes
-    fillTable('topCpuBody', d.top.cpu, 'cpu');
-    fillTable('topMemBody', d.top.mem, 'mem');
+function updateDashboard() {
+    fetch('/api/stats').then(r => r.json()).then(data => {
+        cpuChart.data.datasets[0].data = [data.cpu_percent, 100 - data.cpu_percent];
+        cpuChart.update();
 
-  }catch(e){
-    console.error('refresh error', e);
-  }
+        ramChart.data.datasets[0].data = [data.ram_percent, 100 - data.ram_percent];
+        ramChart.update();
+
+        document.getElementById('netUp').textContent = data.net_upload.toFixed(2);
+        document.getElementById('netDown').textContent = data.net_download.toFixed(2);
+        document.getElementById('cumuUp').textContent = (data.cumu_upload_bytes / (1024*1024)).toFixed(2);
+        document.getElementById('cumuDown').textContent = (data.cumu_download_bytes / (1024*1024)).toFixed(2);
+
+        // جدول CPU
+        let cpuTableBody = document.querySelector("#topCpu tbody");
+        cpuTableBody.innerHTML = "";
+        data.top_cpu.forEach(p => {
+            cpuTableBody.innerHTML += `<tr>
+                <td>${p.name}</td><td>${p.pid}</td><td>${p.user}</td><td>${p.cpu.toFixed(2)}</td>
+            </tr>`;
+        });
+
+        // جدول RAM
+        let memTableBody = document.querySelector("#topMem tbody");
+        memTableBody.innerHTML = "";
+        data.top_mem.forEach(p => {
+            memTableBody.innerHTML += `<tr>
+                <td>${p.name}</td><td>${p.pid}</td><td>${p.user}</td><td>${p.mem.toFixed(2)}</td>
+            </tr>`;
+        });
+    });
 }
-refreshData();
-setInterval(refreshData, 2000);
+
+updateDashboard();
+setInterval(updateDashboard, 3000);
+
 </script>
 </body></html>
 """
 
+from flask import render_template_string
+
 @app.route('/', methods=['GET', 'POST'])
 def login():
-    if 'logged_in' in session:
-        return redirect(url_for('dashboard'))
-    error=None
+    if session.get("logged_in"):
+        return redirect(url_for("dashboard"))
+
+    error = None
     if request.method == 'POST':
-        u = request.form.get('username','').strip()
-        p = request.form.get('password','').strip()
-        lic = request.form.get('license','').strip()
-        if u==USERNAME and p==PASSWORD:
-            session['logged_in']=True
-            session['license_ok']=verify_license(lic)
-            return redirect(url_for('dashboard'))
+        user = request.form.get("username", "")
+        passwd = request.form.get("password", "")
+        license_key = request.form.get("license", "")
+
+        if user == USERNAME and passwd == PASSWORD and verify_license(license_key):
+            session["logged_in"] = True
+            return redirect(url_for("dashboard"))
         else:
-            error="نام کاربری یا رمز عبور اشتباه است"
+            error = "نام کاربری، رمز عبور یا لایسنس اشتباه است."
+
     return render_template_string(login_page, error=error)
 
 @app.route('/dashboard')
 def dashboard():
-    if 'logged_in' not in session:
-        return redirect(url_for('login'))
-    return render_template_string(dashboard_page)
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
 
-@app.route('/get_system_data')
-def get_system_data():
-    cpu = psutil.cpu_percent(interval=0.1)
-    ram = psutil.virtual_memory().percent
-    disk = psutil.disk_usage('/')
-    up, down = get_network_speed_mbps()
-    cpu_temp = get_cpu_temp()
+    hostname = socket.gethostname()
+    platform_str = platform.platform()
+    cpu_count = psutil.cpu_count()
+    cpu_temp = get_cpu_temp() or "نامعلوم"
+
+    uptime_seconds = time.time() - psutil.boot_time()
+    uptime_str = time.strftime("%H:%M:%S", time.gmtime(uptime_seconds))
+
+    external_ip, external_country = get_external_network_usage()
+
+    return render_template_string(dashboard_page,
+                                  hostname=hostname,
+                                  platform=platform_str,
+                                  cpu_count=cpu_count,
+                                  cpu_temp=cpu_temp,
+                                  uptime=uptime_str,
+                                  external_ip=external_ip,
+                                  external_country=external_country)
+
+@app.route('/api/stats')
+def api_stats():
+    if not session.get("logged_in"):
+        return jsonify({"error": "unauthorized"}), 401
+
+    cpu_percent = psutil.cpu_percent(interval=0.2)
+    ram_percent = psutil.virtual_memory().percent
+
+    net_up, net_down = get_network_speed_mb()
+    cumu_up = cumulative_data['internal_upload_bytes']
+    cumu_down = cumulative_data['internal_download_bytes']
+
     top_cpu, top_mem = get_top_processes(limit=10)
 
-    boot_ts = psutil.boot_time()
-    uptime_sec = int(time.time() - boot_ts)
-    def humanize(sec):
-        d, r = divmod(sec, 86400)
-        h, r = divmod(r, 3600)
-        m, s = divmod(r, 60)
-        out=[]
-        if d: out.append(f"{d} روز")
-        if h: out.append(f"{h} ساعت")
-        if m: out.append(f"{m} دقیقه")
-        if not out: out.append(f"{s} ثانیه")
-        return " ".join(out)
-
-    data = {
-        'cpu': round(cpu, 2),
-        'ram': round(ram, 2),
-        'disk': {
-            'total_gb': round(disk.total/ (1024**3), 2),
-            'used_gb': round(disk.used/ (1024**3), 2),
-            'free_gb': round(disk.free/ (1024**3), 2),
-            'percent': round(disk.percent, 2)
-        },
-        'net': {'upload_mbps': up, 'download_mbps': down},
-        'cpu_temp': round(cpu_temp, 1) if cpu_temp is not None else None,
-        'host': {
-            'hostname': socket.gethostname(),
-            'os': f"{platform.system()} {platform.release()}",
-            'uptime_human': humanize(uptime_sec)
-        },
-        'license_ok': session.get('license_ok', False),
-        'top': {'cpu': top_cpu, 'mem': top_mem}
-    }
-    return jsonify(data)
+    return jsonify({
+        "cpu_percent": cpu_percent,
+        "ram_percent": ram_percent,
+        "net_upload": net_up,
+        "net_download": net_down,
+        "cumu_upload_bytes": cumu_up,
+        "cumu_download_bytes": cumu_down,
+        "top_cpu": top_cpu,
+        "top_mem": top_mem,
+    })
 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
 
-if __name__=='__main__':
-    app.run(host='0.0.0.0', port=5000)
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=APP_PORT)
 PYEOF
 
-    echo "[*] ایجاد سرویس systemd..."
-    cat > /etc/systemd/system/lorna.service <<EOF
+    echo "[*] تنظیم دسترسی‌ها..."
+    chmod 700 "$APP_DIR/app.py"
+
+    echo "[*] ایجاد سرویس systemd"
+    cat > /etc/systemd/system/lorna-monitor.service <<EOF
 [Unit]
-Description=Lorna Monitoring Panel (PRO)
+Description=Lorna PRO Network Monitor
 After=network.target
 
 [Service]
 User=root
 WorkingDirectory=$APP_DIR
-Environment=LORNA_SECRET=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 32)
-ExecStart=$VENV_DIR/bin/python $APP_DIR/app.py
+ExecStart=$VENV_DIR/bin/python3 $APP_DIR/app.py
 Restart=always
-RestartSec=2
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable --now lorna.service
+    systemctl enable lorna-monitor.service
+    systemctl restart lorna-monitor.service
 
-    # اگر ufw فعاله، پورت 5000 رو باز کن (بی‌خطر: اگر ufw نباشه یا غیرفعال باشه خطایی نمی‌ده)
-    if command -v ufw >/dev/null 2>&1; then
-      ufw allow $APP_PORT/tcp || true
-    fi
-
-    echo "✅ نصب کامل شد."
-    echo "آدرس دسترسی:  http://<IP-Server>:$APP_PORT"
-    echo "یوزر: admin  | پسورد: admin123 | لایسنس: $LICENSE_VALUE"
-    echo "اگر دما نمایش داده نمی‌شود، نصب lm-sensors انجام شده ولی ممکن است نیاز به پشتیبانی سخت‌افزار داشته باشد."
+    echo "[+] نصب کامل شد."
+    echo "مرورگر را باز کنید و به آدرس http://localhost:$APP_PORT مراجعه کنید."
+    echo "نام کاربری: admin"
+    echo "رمز عبور: admin123"
+    echo "کد لایسنس: lorna"
 
 elif [ "$CHOICE" == "2" ]; then
-    echo "[*] حذف پنل..."
-    systemctl stop lorna.service || true
-    systemctl disable lorna.service || true
-    rm -f /etc/systemd/system/lorna.service
-    rm -rf "$APP_DIR"
+    echo "[*] متوقف کردن سرویس..."
+    systemctl stop lorna-monitor.service || true
+    systemctl disable lorna-monitor.service || true
+    rm -f /etc/systemd/system/lorna-monitor.service
     systemctl daemon-reload
-    echo "✅ حذف انجام شد."
+    echo "[*] حذف فایل‌ها..."
+    rm -rf "$APP_DIR"
+    echo "[+] پنل حذف شد."
 else
-    echo "گزینه نامعتبر."
+    echo "انتخاب نامعتبر."
 fi
